@@ -1,14 +1,14 @@
+import asyncio
 import json
 import os
 from typing import Optional
-from openai import AsyncOpenAI
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from models import ConversationMessage, ActivityLog, InventoryItem
 from utils.unit_converter import normalize_unit, can_convert, convert, are_compatible_units
 from datetime import datetime, date as date_type
 
-client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from crew.crew import guard_validate, aria_process
 
 _pending_actions: dict = {}
 
@@ -19,96 +19,8 @@ NON_FOOD_KEYWORDS = {
     "battery", "cable", "charger", "keyboard", "mouse", "monitor", "tv", "remote",
 }
 
-SYSTEM_PROMPT = """You are ARIA (Automated Restaurant Inventory Assistant), an expert AI inventory supervisor for hotels and restaurants.
 
-Your role: Help workers manage food, beverage, and kitchen supply inventory through natural voice conversation.
-You are professional, precise, and ALWAYS confirm before making changes.
-
-## Core Rules
-1. ALWAYS confirm before updating — never blindly execute add/remove/set
-2. REMEMBER context — track last items, quantities, storage areas, units across messages
-3. ASK follow-up questions when input is incomplete
-4. DETECT unit mismatches — if an item is stored in kg but user says liters, STOP and ask
-5. FLAG suspicious quantities — warn when values are unusually high (>10x typical)
-6. DETECT same-day conflicts — alert ONLY when a different worker already counted this item TODAY
-7. AUTO-CATEGORIZE items intelligently based on your food knowledge
-8. REJECT non-food/non-beverage items
-
-## RELEVANCE POLICY
-This system handles ONLY: food, beverages, kitchen supplies, cleaning chemicals, restaurant consumables.
-If the user mentions clearly non-relevant items (paper, pen, laptop, furniture, electronics, clothing):
-- Set action="none", intent="unknown"
-- Respond politely that this system only handles restaurant/hotel inventory
-
-## UNIT HISTORY RULE
-The "Known item unit history" shows the last recorded unit per item across all sessions.
-When a worker mentions a unit different from history, use judgment:
-- If the worker EXPLICITLY states both old and new ("change Coke from 4 cases to 24 bottles") — intent is unambiguous. Skip clarify. Go straight to action="confirm", acknowledge the unit change inline: "Got it — switching Coke from 4 cases to 24 bottles. Confirm?"
-- Only use action="clarify" when the change is truly ambiguous (worker says "24 bottles" with no mention of the previous unit and units are incompatible).
-- Never do clarify → confirm as two separate turns when the worker's original message made their intent clear.
-
-## CONVERSATION STYLE — BE HUMAN, NOT A CHATBOT
-- Keep responses SHORT: 1–2 sentences for simple operations.
-- When intent is clear, combine acknowledgment and confirmation into ONE message.
-- When the worker says "proceed", "yes", "ok", "do it", "go ahead", "confirm" after a confirm — return action="update", confirmed=true immediately. Do not ask again.
-- Sound natural: "Done — Coke is now 24 bottles." not "The inventory has been successfully updated."
-- After a clarify question, if the worker's reply makes intent obvious, jump to action="confirm" — not another clarify.
-
-## MULTI-ITEM SUPPORT — IMPORTANT
-Workers often report several items at once: "I have 5 kg tomatoes, 3 boxes chicken, 2 liters milk."
-You MUST capture ALL items in the `items` array — never drop any item from the list.
-
-## Daily Count Rule
-Each day's inventory count is recorded separately. Only flag conflicts if two different workers counted the SAME item on the SAME day with different values.
-
-## Storage Area
-When no storage area is specified by the worker, use the Active Workspace storage area from context.
-Always include the storage_area field in every item.
-
-## PRICING RULE
-For every item, include `unit_price` — an approximate US wholesale/restaurant-supply market price in USD per unit.
-Base this on typical bulk restaurant supply pricing, not supermarket retail.
-Examples: tomato $1.20/kg, chicken breast $5.50/kg, milk $1.10/liter, olive oil $6.00/liter, flour $0.60/kg, salmon $14.00/kg, cheddar $8.50/kg, rice $0.90/kg, cola cans $18.00/box.
-If an item has been recorded before with a unit_price, use that same price unless the worker says it changed.
-Always estimate — never leave unit_price null.
-
-## Response Format (ALWAYS return valid JSON only — no markdown, no extra text)
-{
-  "message": "Your conversational response — be helpful, precise, and human",
-  "action": "none | confirm | update | clarify | flag | query_result",
-  "intent": "add | remove | set | query | expiry | analytics | confirm | deny | unknown",
-  "data": {
-    "items": [
-      {
-        "item_name": "string",
-        "category": "string — choose from: Vegetables, Meat, Seafood, Dairy, Dry Goods, Beverages, Bakery, Frozen, Produce, Cleaning Supplies, or best fit",
-        "quantity": number,
-        "unit": "string",
-        "storage_area": "string or null",
-        "unit_price": number (approximate USD wholesale price per unit),
-        "expiry_date": "YYYY-MM-DD or null",
-        "operation": "add | subtract | set"
-      }
-    ],
-    "confirmed": false,
-    "flags": []
-  }
-}
-
-## Flag values: unit_mismatch | suspicious_quantity | conflict | incomplete | expiry_warning | not_relevant
-
-## Examples
-
-User: "I have 5 kg tomatoes, 3 boxes chicken, 2 liters milk on Shelf A"
-Response: {"message": "Got it — 5 kg tomatoes, 3 boxes chicken, 2 liters milk on Shelf A. Shall I add all of these?", "action": "confirm", "intent": "add", "data": {"items": [{"item_name": "tomato", "category": "Vegetables", "quantity": 5, "unit": "kg", "storage_area": "Shelf A", "unit_price": 1.20, "operation": "add"}, {"item_name": "chicken", "category": "Meat", "quantity": 3, "unit": "boxes", "storage_area": "Shelf A", "unit_price": 45.00, "operation": "add"}, {"item_name": "milk", "category": "Dairy", "quantity": 2, "unit": "liters", "storage_area": "Shelf A", "unit_price": 1.10, "operation": "add"}], "confirmed": false, "flags": []}}
-
-User: "Yes" (after confirm)
-Response: {"message": "Done! All items added to inventory.", "action": "update", "intent": "confirm", "data": {"items": [...same items...], "confirmed": true, "flags": []}}
-
-User: "Remove milk" (missing quantity)
-Response: {"message": "How many milk units should I remove?", "action": "clarify", "intent": "remove", "data": {"items": [{"item_name": "milk", "category": "Dairy", "quantity": null, "unit": null, "storage_area": null, "operation": "subtract"}], "confirmed": false, "flags": ["incomplete"]}}
-"""
-
+# ── Context builders (pure Python + DB) ──────────────────────────────────────
 
 def _build_inventory_context(db: Session) -> str:
     today = date_type.today()
@@ -137,7 +49,6 @@ def _build_inventory_context(db: Session) -> str:
 
 
 def _build_item_history_context(db: Session) -> str:
-    """Most recent unit per item across ALL sessions — tells GPT-4o what unit each item was last tracked in."""
     subq = (
         db.query(
             InventoryItem.item_name,
@@ -158,7 +69,7 @@ def _build_item_history_context(db: Session) -> str:
         .all()
     )
     if not items:
-        return ""
+        return "No item history yet."
     lines = ["Known item unit history (most recent record across ALL sessions):"]
     for item in items:
         loc = f"{item.location_name} › {item.storage_area}" if item.location_name else item.storage_area
@@ -179,6 +90,18 @@ def _get_conversation_history(session_id: str, db: Session, limit: int = 20) -> 
     )
     return [{"role": m.role, "content": m.content} for m in reversed(messages)]
 
+
+def _format_conversation_history(history: list) -> str:
+    if not history:
+        return "No conversation history yet."
+    lines = []
+    for msg in history:
+        role = "Worker" if msg["role"] == "user" else "ARIA"
+        lines.append(f"{role}: {msg['content']}")
+    return "\n".join(lines)
+
+
+# ── Deterministic validation helpers ─────────────────────────────────────────
 
 def _get_established_unit(item_name: str, db: Session) -> Optional[str]:
     existing = (
@@ -237,6 +160,8 @@ def _detect_same_day_conflict(
 def _is_non_food_item(item_name: str) -> bool:
     return any(kw in item_name.lower() for kw in NON_FOOD_KEYWORDS)
 
+
+# ── Inventory execution (pure Python + DB) ────────────────────────────────────
 
 def _execute_single_item(item_data: dict, worker_id: str, db: Session, location_name: str = "") -> bool:
     item_name = item_data.get("item_name")
@@ -347,66 +272,16 @@ def _normalize_items(data: dict) -> list:
     return []
 
 
-GUARD_SYSTEM = """You are a restaurant inventory item validator. Your ONLY job: check whether items in the user's message are legitimate restaurant/hotel kitchen inventory items.
-
-STEP 1 — Is this a message that contains inventory items?
-- Set "has_items": false for: confirmations ("yes", "ok", "proceed", "add it"), queries ("what's in stock?"), greetings, or any message with no specific items. Return immediately with all_valid: true.
-
-STEP 2 — For each item mentioned, classify:
-A) CLEARLY VALID: recognized food, beverage, or kitchen/cleaning supply with no ambiguity → is_valid=true, is_ambiguous=false
-B) AMBIGUOUS: the word has a primary non-food meaning OR is slang/regional that a system might misinterpret → is_ambiguous=true
-   Examples of AMBIGUOUS: "rocket" (arugula OR spacecraft), "mars" (candy bar OR planet), "dove" (soap OR bird), "snickers" (candy OR laugh), "bounty" (chocolate OR paper towel)
-   Even if you know the food meaning, flag it — the system needs human confirmation.
-C) CLEARLY NON-FOOD: pen, paper, laptop, chair, phone, furniture, clothing → is_valid=false
-
-STEP 3 — Build guard_message only if any item is ambiguous or invalid:
-- Be specific: name the item and both possible interpretations
-- Example: "Just to confirm — did you mean rocket the salad leaf (arugula), or something else?"
-- For multiple issues: list them all in one message.
-
-Return ONLY valid JSON, no markdown:
-{
-  "has_items": boolean,
-  "all_valid": boolean,
-  "items": [
-    {
-      "name": "string",
-      "is_valid": boolean,
-      "is_ambiguous": boolean,
-      "concern": "what is ambiguous or wrong",
-      "food_interpretation": "the food meaning if ambiguous"
-    }
-  ],
-  "guard_message": "friendly clarification shown to worker — empty string if all_valid"
-}"""
-
-
-async def _guard_validate_items(text: str) -> dict:
-    """Pre-validation LLM call that catches ambiguous or non-food items before ARIA processes them."""
-    try:
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": GUARD_SYSTEM},
-                {"role": "user", "content": text},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=500,
-            timeout=15.0,
-        )
-        return json.loads(response.choices[0].message.content)
-    except Exception as e:
-        print(f"[Guard] Failed: {e} — passing through to ARIA")
-        return {"has_items": False, "all_valid": True, "items": [], "guard_message": ""}
-
+# ── Main entry point ──────────────────────────────────────────────────────────
 
 async def process_message(
     text: str, session_id: str, worker_id: str, db: Session,
     storage_area: Optional[str] = None, location_name: Optional[str] = None
 ) -> dict:
-    # ── Guard: validate items before ARIA processes them ──
-    guard = await _guard_validate_items(text)
+    today = str(date_type.today())
+
+    # ── Guard crew: validate items before ARIA processes them ──
+    guard = await asyncio.to_thread(guard_validate, text)
     if guard.get("has_items") and not guard.get("all_valid"):
         guard_message = guard.get("guard_message") or "Could you clarify what you mean by that item?"
         db.add(ConversationMessage(session_id=session_id, role="user", content=text))
@@ -420,54 +295,40 @@ async def process_message(
             "session_id": session_id,
         }
 
+    # ── Build contexts (pure Python + DB) ──
     inventory_context = _build_inventory_context(db)
-    item_history = _build_item_history_context(db)
+    item_history_context = _build_item_history_context(db)
     history = _get_conversation_history(session_id, db)
+    conversation_history = _format_conversation_history(history)
 
-    workspace_ctx = ""
-    if storage_area:
-        workspace_ctx = (
-            f"\n\n## Active Workspace\n"
-            f"Location: {location_name or 'Unknown'}\n"
-            f"Storage Area: {storage_area}\n"
-            f"When the worker doesn't specify a storage area, use '{storage_area}' as the default."
-        )
+    workspace_context = (
+        f"Location: {location_name or 'Unknown'}\n"
+        f"Storage Area: {storage_area}\n"
+        f"When the worker doesn't specify a storage area, use '{storage_area}' as the default."
+    ) if storage_area else "No specific workspace set. Use 'General Storage' as the default storage area."
 
-    history_ctx = f"\n\n## {item_history}" if item_history else ""
+    pending = _pending_actions.get(session_id)
+    pending_action_context = (
+        f"There is a pending confirmation for this session:\n{json.dumps(pending, indent=2)}\n"
+        "If the worker is saying yes/confirm/proceed, execute this pending action (action='update', confirmed=true)."
+    ) if pending else "No pending action for this session."
 
-    system_with_context = (
-        SYSTEM_PROMPT
-        + f"\n\n## Live Inventory Context (today only)\n{inventory_context}"
-        + history_ctx
-        + workspace_ctx
-        + f"\n\n## Worker ID: {worker_id}"
-        + f"\n## Today's Date: {date_type.today()}"
-    )
-
-    messages = [{"role": "system", "content": system_with_context}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": text})
-
+    # ── ARIA crew: main intelligence ──
     try:
-        response = await client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-            temperature=0.3,
-            response_format={"type": "json_object"},
-            timeout=25.0,
+        parsed = await asyncio.to_thread(
+            aria_process,
+            text,
+            inventory_context,
+            item_history_context,
+            conversation_history,
+            workspace_context,
+            pending_action_context,
+            worker_id,
+            today,
         )
-        raw = response.choices[0].message.content
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        parsed = {
-            "message": "I had trouble processing that. Could you rephrase?",
-            "action": "none",
-            "intent": "unknown",
-            "data": {"items": [], "confirmed": False, "flags": []},
-        }
     except Exception as e:
         err_type = "timed out" if "timeout" in str(e).lower() or "timed out" in str(e).lower() else "failed"
-        print(f"[ARIA] LLM call {err_type}: {e}")
+        print(f"[ARIA Crew] {err_type}: {e}")
         return {
             "message": f"The AI service {err_type} — please try again in a moment.",
             "action": "none",
@@ -484,7 +345,7 @@ async def process_message(
 
     items_list = _normalize_items(data)
 
-    # ── Guard: non-food items ──
+    # ── Deterministic safety net: non-food items ──
     non_food = [i["item_name"] for i in items_list if _is_non_food_item(i.get("item_name", ""))]
     if non_food:
         action = "none"
@@ -496,7 +357,7 @@ async def process_message(
         )
         data.setdefault("flags", []).append("not_relevant")
 
-    # ── Unit mismatch: flag only during non-update actions (not after execution) ──
+    # ── Unit mismatch check ──
     if action not in ("update", "none"):
         for item in items_list:
             if item.get("item_name") and item.get("unit"):
