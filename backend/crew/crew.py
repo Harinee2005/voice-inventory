@@ -72,7 +72,7 @@ def aria_process(
         text=text,
         inventory_context=inventory_context,
         item_history_context=item_history_context,
-        conversation_history=conversation_history,
+        conversation_history_json=conversation_history,
         workspace_context=workspace_context,
         pending_action_context=pending_action_context,
         worker_id=worker_id,

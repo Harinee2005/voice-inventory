@@ -1,3 +1,4 @@
+import base64
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
@@ -7,6 +8,17 @@ from services.ai_service import process_message
 from services.speech_service import transcribe_audio, synthesize_speech
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
+
+
+async def _attach_audio(result: dict) -> dict:
+    """Synthesize TTS for the response message and embed as base64 — eliminates a second round trip."""
+    try:
+        audio_bytes = await synthesize_speech(result["message"])
+        result["audio_base64"] = base64.b64encode(audio_bytes).decode()
+    except Exception as e:
+        print(f"[TTS] synthesis failed: {e}")
+        result["audio_base64"] = None
+    return result
 
 
 @router.post("/process", response_model=VoiceProcessResponse)
@@ -19,6 +31,7 @@ async def process_voice_text(request: VoiceProcessRequest, db: Session = Depends
         location_name=request.location_name,
         db=db,
     )
+    result = await _attach_audio(result)
     return VoiceProcessResponse(**result)
 
 
@@ -41,6 +54,7 @@ async def transcribe_audio_endpoint(
         worker_id=worker_id,
         db=db,
     )
+    result = await _attach_audio(result)
     return {"transcript": transcript, **result}
 
 

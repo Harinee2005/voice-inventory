@@ -20,8 +20,6 @@ NON_FOOD_KEYWORDS = {
 }
 
 
-# ── Context builders (pure Python + DB) ──────────────────────────────────────
-
 def _build_inventory_context(db: Session) -> str:
     today = date_type.today()
     items = (
@@ -49,6 +47,7 @@ def _build_inventory_context(db: Session) -> str:
 
 
 def _build_item_history_context(db: Session) -> str:
+    """Most recent unit per item across ALL sessions — tells GPT-4o what unit each item was last tracked in."""
     subq = (
         db.query(
             InventoryItem.item_name,
@@ -69,7 +68,7 @@ def _build_item_history_context(db: Session) -> str:
         .all()
     )
     if not items:
-        return "No item history yet."
+        return ""
     lines = ["Known item unit history (most recent record across ALL sessions):"]
     for item in items:
         loc = f"{item.location_name} › {item.storage_area}" if item.location_name else item.storage_area
@@ -90,18 +89,6 @@ def _get_conversation_history(session_id: str, db: Session, limit: int = 20) -> 
     )
     return [{"role": m.role, "content": m.content} for m in reversed(messages)]
 
-
-def _format_conversation_history(history: list) -> str:
-    if not history:
-        return "No conversation history yet."
-    lines = []
-    for msg in history:
-        role = "Worker" if msg["role"] == "user" else "ARIA"
-        lines.append(f"{role}: {msg['content']}")
-    return "\n".join(lines)
-
-
-# ── Deterministic validation helpers ─────────────────────────────────────────
 
 def _get_established_unit(item_name: str, db: Session) -> Optional[str]:
     existing = (
@@ -160,8 +147,6 @@ def _detect_same_day_conflict(
 def _is_non_food_item(item_name: str) -> bool:
     return any(kw in item_name.lower() for kw in NON_FOOD_KEYWORDS)
 
-
-# ── Inventory execution (pure Python + DB) ────────────────────────────────────
 
 def _execute_single_item(item_data: dict, worker_id: str, db: Session, location_name: str = "") -> bool:
     item_name = item_data.get("item_name")
@@ -272,16 +257,17 @@ def _normalize_items(data: dict) -> list:
     return []
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
+async def _guard_validate_items(text: str) -> dict:
+    """Guard validation via CrewAI — ignores transcription noise, flags only real invalid items."""
+    return await asyncio.to_thread(guard_validate, text)
+
 
 async def process_message(
     text: str, session_id: str, worker_id: str, db: Session,
     storage_area: Optional[str] = None, location_name: Optional[str] = None
 ) -> dict:
-    today = str(date_type.today())
-
-    # ── Guard crew: validate items before ARIA processes them ──
-    guard = await asyncio.to_thread(guard_validate, text)
+    # ── Guard: validate items before ARIA processes them ──
+    guard = await _guard_validate_items(text)
     if guard.get("has_items") and not guard.get("all_valid"):
         guard_message = guard.get("guard_message") or "Could you clarify what you mean by that item?"
         db.add(ConversationMessage(session_id=session_id, role="user", content=text))
@@ -295,36 +281,34 @@ async def process_message(
             "session_id": session_id,
         }
 
-    # ── Build contexts (pure Python + DB) ──
     inventory_context = _build_inventory_context(db)
     item_history_context = _build_item_history_context(db)
     history = _get_conversation_history(session_id, db)
-    conversation_history = _format_conversation_history(history)
+    conversation_history_json = json.dumps(history, indent=2)
 
     workspace_context = (
         f"Location: {location_name or 'Unknown'}\n"
         f"Storage Area: {storage_area}\n"
         f"When the worker doesn't specify a storage area, use '{storage_area}' as the default."
-    ) if storage_area else "No specific workspace set. Use 'General Storage' as the default storage area."
+    ) if storage_area else "No specific workspace set. Use 'General Storage' as default."
 
     pending = _pending_actions.get(session_id)
     pending_action_context = (
-        f"There is a pending confirmation for this session:\n{json.dumps(pending, indent=2)}\n"
-        "If the worker is saying yes/confirm/proceed, execute this pending action (action='update', confirmed=true)."
-    ) if pending else "No pending action for this session."
+        f"Pending confirmation for this session:\n{json.dumps(pending, indent=2)}\n"
+        "If the worker says yes/confirm/proceed/that's correct, execute this (action='update', confirmed=true)."
+    ) if pending else "No pending action."
 
-    # ── ARIA crew: main intelligence ──
     try:
         parsed = await asyncio.to_thread(
             aria_process,
             text,
             inventory_context,
             item_history_context,
-            conversation_history,
+            conversation_history_json,
             workspace_context,
             pending_action_context,
             worker_id,
-            today,
+            str(date_type.today()),
         )
     except Exception as e:
         err_type = "timed out" if "timeout" in str(e).lower() or "timed out" in str(e).lower() else "failed"
@@ -345,7 +329,7 @@ async def process_message(
 
     items_list = _normalize_items(data)
 
-    # ── Deterministic safety net: non-food items ──
+    # ── Guard: non-food items ──
     non_food = [i["item_name"] for i in items_list if _is_non_food_item(i.get("item_name", ""))]
     if non_food:
         action = "none"
@@ -357,7 +341,7 @@ async def process_message(
         )
         data.setdefault("flags", []).append("not_relevant")
 
-    # ── Unit mismatch check ──
+    # ── Unit mismatch: flag only during non-update actions (not after execution) ──
     if action not in ("update", "none"):
         for item in items_list:
             if item.get("item_name") and item.get("unit"):

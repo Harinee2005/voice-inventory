@@ -23,7 +23,7 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
 
 async def synthesize_speech(text: str) -> bytes:
     response = await client.audio.speech.create(
-        model="tts-1",
+        model="tts-1-hd",
         voice="nova",
         input=text,
         response_format="mp3",

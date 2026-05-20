@@ -87,27 +87,62 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
 
 export function useTTS() {
   const [isSpeaking, setIsSpeaking] = useState(false)
+  const audioRef = useRef(null)
 
-  const speak = useCallback((text) => {
-    if (!window.speechSynthesis || !text) return
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
-    utterance.rate = 0.95
-    utterance.pitch = 1.0
-    utterance.volume = 1.0
-    const voices = window.speechSynthesis.getVoices()
-    const preferred = voices.find(
-      (v) => v.name.includes('Google') || v.name.includes('Samantha') || v.lang === 'en-US'
-    )
-    if (preferred) utterance.voice = preferred
-    utterance.onstart = () => setIsSpeaking(true)
-    utterance.onend = () => setIsSpeaking(false)
-    utterance.onerror = () => setIsSpeaking(false)
-    window.speechSynthesis.speak(utterance)
+  const _playBlob = useCallback(async (blob) => {
+    const url = URL.createObjectURL(blob)
+    const audio = new Audio(url)
+    audioRef.current = audio
+    audio.onended = () => {
+      setIsSpeaking(false)
+      URL.revokeObjectURL(url)
+      audioRef.current = null
+    }
+    audio.onerror = () => {
+      setIsSpeaking(false)
+      URL.revokeObjectURL(url)
+      audioRef.current = null
+    }
+    await audio.play()
   }, [])
 
+  // audioBase64: inline MP3 from the API response — plays immediately, no extra round trip.
+  // Falls back to a separate /api/voice/synthesize call for greetings and other standalone text.
+  const speak = useCallback(async (text, audioBase64 = null) => {
+    if (!text) return
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+
+    setIsSpeaking(true)
+    try {
+      if (audioBase64) {
+        const binary = atob(audioBase64)
+        const bytes = new Uint8Array(binary.length)
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+        await _playBlob(new Blob([bytes], { type: 'audio/mpeg' }))
+      } else {
+        const response = await fetch('/api/voice/synthesize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+        if (!response.ok) throw new Error('TTS request failed')
+        await _playBlob(await response.blob())
+      }
+    } catch (err) {
+      console.error('TTS error:', err)
+      setIsSpeaking(false)
+    }
+  }, [_playBlob])
+
   const stopSpeaking = useCallback(() => {
-    window.speechSynthesis?.cancel()
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
     setIsSpeaking(false)
   }, [])
 

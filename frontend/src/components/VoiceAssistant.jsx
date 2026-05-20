@@ -70,7 +70,7 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
         const { data: res } = await processVoiceText(trimmed, sessionId, workerId, storageArea, locationName)
         const flags = res.data?.flags || []
         addMessage('assistant', res.message, res.action, flags, res.data)
-        if (!muteVoice) speak(res.message)
+        if (!muteVoice) speak(res.message, res.audio_base64 || null)
         if (res.inventory_updated) onInventoryUpdate?.()
       } catch (err) {
         const isTimeout = err.code === 'ECONNABORTED' || err.message?.includes('timeout')
