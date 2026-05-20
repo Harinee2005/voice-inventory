@@ -10,6 +10,7 @@ import LocationSetup from './components/LocationSetup'
 import StorageAreasPage from './components/StorageAreasPage'
 import LocationsPage from './components/LocationsPage'
 import VoiceAuditModal from './components/VoiceAuditModal'
+import UserInsights from './components/UserInsights'
 import { useWebSocket } from './hooks/useWebSocket'
 
 function getOrCreateSessionId() {
@@ -102,29 +103,28 @@ export default function App() {
 
         <main className="flex-1 p-6 overflow-auto">
 
-          {activeTab === 'dashboard' && (
-            <div>
-              <PageHeader title="Dashboard" subtitle="Live view of your current workspace" />
-              <div className={`grid gap-5 h-[calc(100vh-196px)] ${workspace ? 'grid-cols-1 xl:grid-cols-[1fr_380px]' : 'grid-cols-1'}`}>
-                <div className="flex-1 min-h-0">
-                  <InventoryTable refreshTrigger={refreshKey} workspace={workspace} />
-                </div>
-                {workspace && (
-                  <div className="h-full min-h-[560px]">
-                    <VoiceAssistant
-                      sessionId={sessionId}
-                      workerId={workerName}
-                      onInventoryUpdate={handleInventoryUpdate}
-                      storageArea={workspace.storageAreaName}
-                      locationName={workspace.locationName}
-                      shouldGreet={!hasGreeted}
-                      onGreeted={() => setHasGreeted(true)}
-                    />
-                  </div>
-                )}
+          {/* Dashboard — always mounted so VoiceAssistant chat state survives tab switches */}
+          <div className={activeTab !== 'dashboard' ? 'hidden' : ''}>
+            <PageHeader title="Dashboard" subtitle="Live view of your current workspace" />
+            <div className={`grid gap-5 h-[calc(100vh-196px)] ${workspace ? 'grid-cols-1 xl:grid-cols-[1fr_380px]' : 'grid-cols-1'}`}>
+              <div className="flex-1 min-h-0">
+                <InventoryTable refreshTrigger={refreshKey} workspace={workspace} />
               </div>
+              {workspace && (
+                <div className="h-full min-h-[560px]">
+                  <VoiceAssistant
+                    sessionId={sessionId}
+                    workerId={workerName}
+                    onInventoryUpdate={handleInventoryUpdate}
+                    storageArea={workspace.storageAreaName}
+                    locationName={workspace.locationName}
+                    shouldGreet={!hasGreeted}
+                    onGreeted={() => setHasGreeted(true)}
+                  />
+                </div>
+              )}
             </div>
-          )}
+          </div>
 
           {activeTab === 'locations' && (
             <div>
@@ -166,6 +166,16 @@ export default function App() {
                 </div>
                 <ActivityFeed refreshTrigger={refreshKey} />
               </div>
+            </div>
+          )}
+
+          {activeTab === 'insights' && (
+            <div>
+              <PageHeader
+                title="User Insights"
+                subtitle="What ARIA has learned about each worker — vocabulary, emotion, and personality."
+              />
+              <UserInsights workerId={workerName} refreshTrigger={refreshKey} />
             </div>
           )}
 

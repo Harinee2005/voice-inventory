@@ -4,6 +4,7 @@ from typing import List
 from database import get_db
 from models import ConversationMessage, ActivityLog
 from schemas import ConversationMessageResponse, ActivityLogResponse
+from services.ai_service import clear_session_pending
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
 
@@ -26,6 +27,7 @@ def clear_conversation(session_id: str, db: Session = Depends(get_db)):
         ConversationMessage.session_id == session_id
     ).delete()
     db.commit()
+    clear_session_pending(session_id)
     return {"message": "Conversation cleared"}
 
 

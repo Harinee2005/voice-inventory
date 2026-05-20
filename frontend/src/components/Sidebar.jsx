@@ -1,4 +1,4 @@
-import { LayoutDashboard, MapPin, Package, BarChart3, Grid3X3, History, Users, Settings, LogOut, Cpu, ChevronDown } from 'lucide-react'
+import { LayoutDashboard, MapPin, Package, BarChart3, Grid3X3, History, Users, Settings, LogOut, Cpu, Brain } from 'lucide-react'
 
 const NAV = [
   { id: 'dashboard',  label: 'Dashboard',      icon: LayoutDashboard },
@@ -7,6 +7,7 @@ const NAV = [
   { id: 'analytics',  label: 'Analytics',       icon: BarChart3 },
   { id: 'storage',    label: 'Storage Areas',   icon: Grid3X3 },
   { id: 'history',    label: 'Count History',   icon: History },
+  { id: 'insights',   label: 'User Insights',   icon: Brain },
 ]
 
 const ADMIN = [

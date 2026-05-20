@@ -60,11 +60,12 @@ def aria_process(
     pending_action_context: str,
     worker_id: str,
     today: str,
+    user_profile_context: str = "",
+    fuzzy_units_hint: str = "",
 ) -> dict:
     """
     Main ARIA processing via CrewAI.
-    Returns a dict with message, action, intent, and data — identical shape to the
-    legacy json.loads(raw) output so the rest of process_message is unchanged.
+    Returns a dict with message, action, intent, data, user_emotion, new_lexicons, personality_note.
     """
     llm = get_llm()
     agent = create_aria_agent(llm)
@@ -78,6 +79,8 @@ def aria_process(
         worker_id=worker_id,
         today=today,
         agent=agent,
+        user_profile_context=user_profile_context,
+        fuzzy_units_hint=fuzzy_units_hint,
     )
     result = _run_single(task)
     aria: ARIAResult = _extract(result, ARIAResult)

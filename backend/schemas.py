@@ -119,3 +119,29 @@ class AnalyticsResponse(BaseModel):
     recent_activity: List[Dict]
     flagged_items: List[Dict]
     price_analytics: Dict = {}
+
+
+class UserProfileResponse(BaseModel):
+    id: int
+    worker_id: str
+    emotion_state: str
+    tone_preference: str
+    personality_notes: Optional[str] = None
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class UserLexiconResponse(BaseModel):
+    id: int
+    worker_id: str
+    original_word: str
+    resolved_word: Optional[str] = None
+    word_type: str
+    usage_count: int
+    first_seen: datetime
+    last_seen: datetime
+
+    class Config:
+        from_attributes = True

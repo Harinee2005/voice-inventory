@@ -19,6 +19,7 @@ const FLAG_BADGES = {
   conflict:           { label: 'Conflict',             color: 'bg-red-50 text-red-600 border-red-200' },
   incomplete:         { label: 'Needs Clarification',  color: 'bg-amber-50 text-amber-600 border-amber-200' },
   expiry_warning:     { label: 'Expiry Alert',         color: 'bg-orange-50 text-orange-600 border-orange-200' },
+  storage_warning:    { label: 'Storage Mismatch',     color: 'bg-yellow-50 text-yellow-700 border-yellow-200' },
 }
 
 function buildGreeting(workerId, locationName, storageArea) {

@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from sqlalchemy import text, inspect
 from database import engine, Base, SessionLocal
-from routers import inventory, voice, analytics, conversations, locations
+from routers import inventory, voice, analytics, conversations, locations, users
 
 
 class ConnectionManager:
@@ -52,6 +52,19 @@ def _run_migrations():
                     print(f"[Migration] Added column inventory.{col}")
             conn.commit()
 
+    # UserProfile migrations
+    if "user_profiles" in existing_tables:
+        existing_cols = {c["name"] for c in inspector.get_columns("user_profiles")}
+        profile_migrations = [
+            ("tone_preference", "VARCHAR(50) DEFAULT 'friendly_fun'"),
+        ]
+        with engine.connect() as conn:
+            for col, definition in profile_migrations:
+                if col not in existing_cols:
+                    conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {col} {definition}"))
+                    print(f"[Migration] Added column user_profiles.{col}")
+            conn.commit()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -80,6 +93,7 @@ app.include_router(voice.router)
 app.include_router(analytics.router)
 app.include_router(conversations.router)
 app.include_router(locations.router)
+app.include_router(users.router)
 
 
 @app.websocket("/ws")

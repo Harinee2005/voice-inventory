@@ -67,3 +67,27 @@ class ActivityLog(Base):
     worker = Column(String(50), default="worker")
     session_id = Column(String(100), nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(100), unique=True, index=True, nullable=False)
+    emotion_state = Column(String(50), default="neutral")   # neutral | happy | frustrated | angry
+    tone_preference = Column(String(50), default="friendly_fun")  # friendly_fun | formal
+    personality_notes = Column(Text, nullable=True)         # cumulative AI observations
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class UserLexicon(Base):
+    __tablename__ = "user_lexicons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(100), index=True, nullable=False)
+    original_word = Column(String(100), nullable=False)     # what the user said
+    resolved_word = Column(String(100), nullable=True)      # what it actually means
+    word_type = Column(String(50), default="unknown")       # unit | item | abbreviation | slang
+    usage_count = Column(Integer, default=1)
+    first_seen = Column(DateTime, default=datetime.utcnow)
+    last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

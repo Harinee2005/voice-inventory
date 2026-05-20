@@ -40,3 +40,8 @@ export const deleteLocation = (id) => api.delete(`/locations/${id}`)
 export const getStorageAreas = (locationId) => api.get(`/locations/${locationId}/storage-areas`)
 export const createStorageArea = (locationId, data) => api.post(`/locations/${locationId}/storage-areas`, data)
 export const deleteStorageArea = (id) => api.delete(`/locations/storage-areas/${id}`)
+
+export const getUserProfile = (workerId) => api.get(`/users/${workerId}/profile`)
+export const getUserLexicons = (workerId) => api.get(`/users/${workerId}/lexicons`)
+export const deleteLexicon = (workerId, lexiconId) => api.delete(`/users/${workerId}/lexicons/${lexiconId}`)
+export const getAllUserProfiles = () => api.get('/users/')

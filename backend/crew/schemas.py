@@ -35,8 +35,17 @@ class ARIAData(BaseModel):
     flags: List[str] = Field(default_factory=list)
 
 
+class LexiconEntry(BaseModel):
+    original_word: str
+    resolved_word: Optional[str] = None
+    word_type: str = "unknown"   # unit | item | abbreviation | slang
+
+
 class ARIAResult(BaseModel):
     message: str
     action: str = "none"
     intent: str = "unknown"
     data: ARIAData = Field(default_factory=ARIAData)
+    user_emotion: str = "neutral"           # neutral | happy | frustrated | angry
+    new_lexicons: List[LexiconEntry] = Field(default_factory=list)
+    personality_note: Optional[str] = None  # brief observation about this worker's style

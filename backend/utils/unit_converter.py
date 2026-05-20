@@ -1,3 +1,49 @@
+FUZZY_UNIT_ALIASES = {
+    # Misspellings
+    "littles": "liters",
+    "litters": "liters",
+    "litre": "liters",
+    "litres": "liters",
+    "kilo": "kg",
+    "kilos": "kg",
+    "kilogramme": "kg",
+    "kilogrammes": "kg",
+    "grame": "g",
+    "grames": "g",
+    "grms": "g",
+    "peices": "pieces",
+    "pices": "pieces",
+    "peaces": "pieces",
+    "botttles": "bottles",
+    "botles": "bottles",
+    "bttles": "bottles",
+    "canes": "cans",
+    "caans": "cans",
+    "boxs": "boxes",
+    "bxs": "boxes",
+    "pakkets": "packets",
+    "packt": "packets",
+    "carton": "cartons",
+    "mililiters": "ml",
+    "mililit": "ml",
+    "mls": "ml",
+    "galons": "gallons",
+    "galon": "gallons",
+    # Voice-recognition mishearings (speech-to-text phonetic errors)
+    "letters": "liters",
+    "leaders": "liters",
+    "leader": "liter",
+    "litters": "liters",
+    "leaders": "liters",
+    "killos": "kg",
+    "grems": "g",
+    "peces": "pieces",
+    "peases": "pieces",
+    "bottels": "bottles",
+    "pakages": "packages",
+    "crates": "crates",  # already correct but include for normalization
+}
+
 UNIT_ALIASES = {
     "kgs": "kg", "kilograms": "kg", "kilogram": "kg",
     "lbs": "lb", "pounds": "lb", "pound": "lb",
@@ -34,6 +80,9 @@ UNIT_GROUPS = {
     "count": {"pieces"},
     "packaging": {"packets", "boxes", "cartons", "cans", "bottles", "bags"},
 }
+
+
+from typing import Optional
 
 
 def normalize_unit(unit: str) -> str:
@@ -75,3 +124,28 @@ def get_unit_group(unit: str) -> str:
         if u in group_units:
             return group_name
     return "packaging"
+
+
+def fuzzy_match_unit(word: str) -> Optional[str]:
+    """Return corrected unit only for ACTUAL typos in FUZZY_UNIT_ALIASES.
+    Valid aliases (kgs, liter, pcs…) return None — they are correct, not fuzzy."""
+    return FUZZY_UNIT_ALIASES.get(word.lower().strip())
+
+
+def extract_fuzzy_units(text: str) -> list:
+    """
+    Scan text for potential unit typos.
+    Returns list of (original_word, corrected_unit) tuples.
+    Pattern: number followed by unknown word followed by 'of' or item name.
+    """
+    import re
+    matches = []
+    # Match patterns like "5 littles of" or "3 kilo chicken"
+    pattern = re.compile(r'\b(\d+(?:\.\d+)?)\s+([a-zA-Z]+)\b', re.IGNORECASE)
+    known_items = set()  # Don't flag actual known food items
+    for match in pattern.finditer(text):
+        word = match.group(2).lower()
+        correction = fuzzy_match_unit(word)
+        if correction and correction != word:
+            matches.append((match.group(2), correction))
+    return matches
