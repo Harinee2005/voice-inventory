@@ -139,7 +139,11 @@ NON_FOOD_KEYWORDS = {
 # Context builders
 # ──────────────────────────────────────────────
 
-def _build_inventory_context(db: Session) -> str:
+def _build_inventory_context(
+    db: Session,
+    storage_area: str = "",
+    location_name: str = "",
+) -> str:
     today = date_type.today()
     items = (
         db.query(InventoryItem)
@@ -150,7 +154,18 @@ def _build_inventory_context(db: Session) -> str:
     )
     if not items:
         return f"No items counted yet today ({today}). Inventory is fresh for today."
-    lines = [f"Today's inventory ({today}):"]
+
+    # Pre-compute grand total across all locations
+    grand_total = sum(
+        round(i.quantity * i.unit_price, 2)
+        for i in items
+        if i.quantity and i.unit_price
+    )
+
+    lines = [
+        f"Today's inventory ({today}):",
+        f"  [Grand total across ALL locations: ${round(grand_total, 2):.2f} — use this exact figure when asked about all-location totals]",
+    ]
     for item in items:
         flag = " [FLAGGED]" if item.is_flagged else ""
         expiry = f", expires {item.expiry_date}" if item.expiry_date else ""
@@ -162,6 +177,37 @@ def _build_inventory_context(db: Session) -> str:
             f"  • {item.item_name} ({item.category}): {item.quantity} {item.unit}"
             f"{price} @ {loc}, counted by {item.updated_by}{expiry}{flag}"
         )
+
+    # Workspace-specific pre-computed summary — prevents LLM arithmetic errors
+    if storage_area:
+        workspace_items = [
+            i for i in items
+            if i.storage_area == storage_area
+            and (not location_name or i.location_name == location_name)
+        ]
+        if workspace_items:
+            workspace_label = f"{location_name} › {storage_area}" if location_name else storage_area
+            total_value = sum(
+                round(i.quantity * i.unit_price, 2)
+                for i in workspace_items
+                if i.quantity and i.unit_price
+            )
+            lines.append(f"\n## Pre-computed workspace summary for '{workspace_label}'")
+            lines.append(f"  Item count: {len(workspace_items)}")
+            lines.append(f"  Total value: ${round(total_value, 2):.2f}")
+            lines.append("  Items:")
+            for i in workspace_items:
+                item_total = round(i.quantity * i.unit_price, 2) if i.quantity and i.unit_price else 0.0
+                price_str = (
+                    f"{i.quantity} {i.unit} × ${i.unit_price:.2f} = ${item_total:.2f}"
+                    if i.unit_price else f"{i.quantity} {i.unit} (no price)"
+                )
+                lines.append(f"    - {i.item_name}: {price_str}")
+            lines.append(
+                f"  IMPORTANT: When asked about total value for '{workspace_label}', "
+                f"always report ${round(total_value, 2):.2f} — do NOT recompute."
+            )
+
     return "\n".join(lines)
 
 
@@ -690,7 +736,11 @@ async def process_message(
         }
 
     # ── Build all context ──
-    inventory_context = _build_inventory_context(db)
+    inventory_context = _build_inventory_context(
+        db,
+        storage_area=storage_area or "",
+        location_name=location_name or "",
+    )
     item_history_context = _build_item_history_context(db)
     history = _get_conversation_history(session_id, db, limit=30)
     conversation_history_json = json.dumps(history, indent=2)
