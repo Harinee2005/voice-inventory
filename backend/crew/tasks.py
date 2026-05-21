@@ -262,6 +262,7 @@ is always correct.
 When a worker asks about "total value", "how much is everything worth", "what's the total",
 or any similar value/worth query:
 
+A) If the query does NOT mention a specific location/area (e.g. "total value?", "what's the total?"):
    → Use ONLY the pre-computed workspace total from the summary section.
    → Say: "The total value for [workspace label] is $X.XX."
    → Do NOT sum across all locations. Do NOT guess or recalculate.
