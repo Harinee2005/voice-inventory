@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from typing import Optional
 from sqlalchemy.orm import Session
@@ -7,14 +8,18 @@ from sqlalchemy import func
 from models import ConversationMessage, ActivityLog, InventoryItem, UserProfile, UserLexicon
 from utils.unit_converter import normalize_unit, can_convert, convert, are_compatible_units, extract_fuzzy_units
 from datetime import datetime, date as date_type
+from logging_config import J
 
-from crew.crew import guard_validate, aria_process
+logger = logging.getLogger(__name__)
 
 _pending_actions: dict = {}
 
 
 def clear_session_pending(session_id: str) -> None:
+    had = session_id in _pending_actions
     _pending_actions.pop(session_id, None)
+    if had:
+        logger.info("PENDING CLEARED  session=%s  (manual clear)", session_id)
 
 import re as _re
 
@@ -128,11 +133,79 @@ def _is_affirmation(text: str) -> bool:
 
 
 NON_FOOD_KEYWORDS = {
-    "paper", "pen", "pencil", "stapler", "printer", "laptop", "computer", "phone",
-    "mobile", "tablet", "chair", "table", "desk", "furniture", "cloth", "shirt",
-    "shoes", "bag", "book", "notebook", "scissors", "tape", "glue", "paint",
-    "battery", "cable", "charger", "keyboard", "mouse", "monitor", "tv", "remote",
+    # Office / stationery
+    "paper", "pen", "pencil", "stapler", "printer", "scissors", "tape", "glue",
+    "book", "notebook",
+    # Electronics
+    "laptop", "computer", "phone", "mobile", "tablet", "keyboard", "mouse",
+    "monitor", "tv", "television", "remote", "battery", "cable", "charger",
+    "camera", "headphone", "speaker",
+    # Furniture / fixtures
+    "chair", "table", "desk", "furniture", "sofa", "couch", "shelf", "rack",
+    # Clothing / personal items
+    "cloth", "shirt", "shoes", "pants", "dress", "jacket", "uniform", "bag",
+    # Vehicles / machinery
+    "bike", "bicycle", "motorbike", "motorcycle", "car", "truck", "van",
+    "vehicle", "engine", "motor", "machine", "tractor", "scooter",
+    # Tools / hardware
+    "hammer", "drill", "wrench", "screwdriver", "nail", "bolt", "wire", "pipe",
+    "paint", "brush",
+    # Miscellaneous non-inventory
+    "money", "cash", "coin", "invoice", "receipt",
 }
+
+# Generic category terms that are too vague to be a valid inventory item.
+# Worker must specify the actual item (e.g. "tomato" not "vegetable").
+GENERIC_CATEGORY_TERMS = {
+    "vegetable", "vegetables",
+    "fruit", "fruits",
+    "meat", "meats",
+    "seafood", "seafoods",
+    "dairy",
+    "grain", "grains",
+    "beverage", "beverages",
+    "produce",
+    "food", "foods",
+    "ingredient", "ingredients",
+    "item", "items",
+    "stuff", "things",
+    "grocery", "groceries",
+    "supply", "supplies",
+    "spice", "spices",
+    "herb", "herbs",
+}
+
+# Example hints shown per category to help the worker be specific
+_GENERIC_EXAMPLES = {
+    "vegetable": "tomato, carrot, spinach",
+    "vegetables": "tomato, carrot, spinach",
+    "fruit": "apple, mango, banana",
+    "fruits": "apple, mango, banana",
+    "meat": "chicken, beef, pork",
+    "meats": "chicken, beef, pork",
+    "seafood": "salmon, prawn, tuna",
+    "dairy": "milk, paneer, curd",
+    "grain": "rice, wheat flour, oats",
+    "grains": "rice, wheat flour, oats",
+    "beverage": "coke, orange juice, water",
+    "beverages": "coke, orange juice, water",
+    "spice": "turmeric, chilli powder, pepper",
+    "spices": "turmeric, chilli powder, pepper",
+}
+
+
+def _is_generic_category(item_name: str) -> bool:
+    """Return True if item_name is a vague category term, not a specific inventory item."""
+    words = set(item_name.lower().split())
+    return bool(words & GENERIC_CATEGORY_TERMS)
+
+
+def _generic_category_hint(item_name: str) -> str:
+    """Return an example hint for the detected generic term."""
+    for word in item_name.lower().split():
+        if word in _GENERIC_EXAMPLES:
+            return _GENERIC_EXAMPLES[word]
+    return "a specific item name"
 
 
 # ──────────────────────────────────────────────
@@ -299,6 +372,11 @@ def _save_user_insights(worker_id: str, aria_result: dict, db: Session) -> None:
     user_emotion = aria_result.get("user_emotion", "neutral")
     personality_note = aria_result.get("personality_note")
     new_lexicons = aria_result.get("new_lexicons", [])
+    logger.info(
+        "USER INSIGHTS  worker=%s  emotion=%s  personality_note=%r  new_lexicons=%d",
+        worker_id, user_emotion,
+        (personality_note or "")[:80], len(new_lexicons),
+    )
 
     profile = _get_or_create_user_profile(worker_id, db)
 
@@ -365,6 +443,7 @@ def _save_user_insights(worker_id: str, aria_result: dict, db: Session) -> None:
             existing_lex.last_seen = datetime.utcnow()
             if resolved:
                 existing_lex.resolved_word = resolved
+            logger.info("  LEXICON UPDATED  worker=%s  word=%r → %r  count=%d", worker_id, original, resolved, existing_lex.usage_count)
         else:
             db.add(UserLexicon(
                 worker_id=worker_id,
@@ -372,8 +451,10 @@ def _save_user_insights(worker_id: str, aria_result: dict, db: Session) -> None:
                 resolved_word=resolved or None,
                 word_type=word_type,
             ))
+            logger.info("  LEXICON ADDED  worker=%s  word=%r → %r  type=%s", worker_id, original, resolved, word_type)
 
     db.commit()
+    logger.info("  USER PROFILE SAVED  worker=%s  emotion=%s", worker_id, user_emotion)
 
 
 # ──────────────────────────────────────────────
@@ -533,7 +614,10 @@ def _detect_same_day_conflict(
 
 
 def _is_non_food_item(item_name: str) -> bool:
-    return any(kw in item_name.lower() for kw in NON_FOOD_KEYWORDS)
+    # Use word-level matching — substring check causes false positives
+    # e.g. "table" in "vegetables", "pen" in "open", "bag" in "cabbage"
+    words = set(item_name.lower().split())
+    return bool(words & NON_FOOD_KEYWORDS)
 
 
 # ──────────────────────────────────────────────
@@ -560,7 +644,13 @@ def _execute_single_item(
     today = date_type.today()
 
     if not item_name or quantity is None:
+        logger.warning("DB WRITE SKIPPED  item_name=%r  quantity=%s  (missing data)", item_name, quantity)
         return False
+
+    logger.info(
+        "DB WRITE ──▶  item=%r  op=%s  qty=%s  unit=%r  area=%r  loc=%r  worker=%s  price=%s  expiry=%s",
+        item_name, operation, quantity, unit, storage_area, location_name, worker_id, unit_price, expiry_date,
+    )
 
     existing = (
         db.query(InventoryItem)
@@ -573,10 +663,16 @@ def _execute_single_item(
     )
 
     if existing:
+        old_qty  = existing.quantity
+        old_unit = existing.unit
         incoming_unit = normalize_unit(unit)
         stored_unit = normalize_unit(existing.unit)
 
         if incoming_unit != stored_unit and can_convert(stored_unit, incoming_unit):
+            logger.info(
+                "  DB UNIT CONVERSION  %s: %s → %s  [EDGE CASE]",
+                item_name, stored_unit, incoming_unit,
+            )
             existing_in_new = convert(existing.quantity, existing.unit, unit)
             if operation == "add":
                 existing.quantity = round(existing_in_new + quantity, 4)
@@ -586,10 +682,17 @@ def _execute_single_item(
                 existing.quantity = quantity
             existing.unit = incoming_unit
         else:
+            if stored_unit != incoming_unit:
+                logger.info(
+                    "  DB UNIT SWITCH  %s: %s → %s  [INCOMPATIBLE UNIT CHANGE]",
+                    item_name, stored_unit, incoming_unit,
+                )
             if operation == "add":
                 existing.quantity = round(existing.quantity + quantity, 4)
+                existing.unit = normalize_unit(unit)
             elif operation == "subtract":
                 existing.quantity = max(0, round(existing.quantity - quantity, 4))
+                existing.unit = normalize_unit(unit)
             else:
                 existing.quantity = quantity
                 existing.unit = normalize_unit(unit)
@@ -602,8 +705,14 @@ def _execute_single_item(
             existing.category = category
         if unit_price is not None:
             existing.unit_price = unit_price
+
+        logger.info(
+            "  DB UPDATE  item=%r  BEFORE: %s %s  AFTER: %s %s  op=%s  area=%r  worker=%s",
+            item_name, old_qty, old_unit, existing.quantity, existing.unit,
+            operation, storage_area, worker_id,
+        )
     else:
-        db.add(InventoryItem(
+        new_item = InventoryItem(
             item_name=item_name.lower().strip(),
             category=category,
             quantity=quantity,
@@ -614,15 +723,27 @@ def _execute_single_item(
             expiry_date=expiry_date,
             updated_by=worker_id,
             count_date=today,
-        ))
+        )
+        db.add(new_item)
+        logger.info(
+            "  DB INSERT  item=%r  qty=%s  unit=%r  area=%r  cat=%r  price=%s  worker=%s  [NEW ITEM]",
+            item_name, quantity, normalize_unit(unit), storage_area, category, unit_price, worker_id,
+        )
 
     op_label = {"add": "Added", "subtract": "Removed", "set": "Set"}.get(operation, "Updated")
+    log_details = f"{op_label} {quantity} {unit} of {item_name} at {storage_area} [{today}]"
     db.add(ActivityLog(
         action=op_label,
         item_name=item_name,
-        details=f"{op_label} {quantity} {unit} of {item_name} at {storage_area} [{today}]",
+        details=log_details,
         worker=worker_id,
     ))
+    logger.info(
+        "DB WRITE ◀──  item=%r  op=%s  new_qty=%s  unit=%r  area=%r  worker=%s  [ActivityLog: %r]",
+        item_name, op_label,
+        existing.quantity if existing else quantity,
+        unit, storage_area, worker_id, log_details,
+    )
     return True
 
 
@@ -667,15 +788,16 @@ def _normalize_items(data: dict) -> list:
 
 
 # ──────────────────────────────────────────────
-# Guard + ARIA crew wrappers
+# Guard crew wrapper (used by guard_node in workflow/nodes.py)
 # ──────────────────────────────────────────────
 
 async def _guard_validate_items(text: str) -> dict:
-    return await asyncio.to_thread(guard_validate, text)
+    from agents.guard_agent import guard_validate
+    return await guard_validate(text)
 
 
 # ──────────────────────────────────────────────
-# Main processing function
+# Main processing function — LangGraph entry point
 # ──────────────────────────────────────────────
 
 async def process_message(
@@ -686,257 +808,58 @@ async def process_message(
     storage_area: Optional[str] = None,
     location_name: Optional[str] = None,
 ) -> dict:
-    # ── Eagerly ensure user profile exists — regardless of what happens next ──
+    """
+    Route a worker's voice message through the LangGraph workflow:
+
+        START
+          ↓ (parallel)
+        load_context_node + load_memory_node   ← DB context + Mem0 worker memories
+          ↓ (fan-in)
+        preprocess_node                        ← fuzzy units, affirmation, fragment hints
+          ↓
+        guard_node                             ← validate items via CrewAI Guard
+          ↓ (conditional)
+        ├── rejected_node → END
+        └── aria_node                          ← main ARIA CrewAI agent
+              ↓
+          validate_node                        ← Python-level safety checks
+              ↓
+          execute_node                         ← DB writes + conversation save
+              ↓
+          persist_memory_node                  ← Mem0 writeback
+              ↓
+             END
+    """
+    from workflow.graph import get_graph
+
+    graph = get_graph()
+
+    initial_state = {
+        "text": text,
+        "session_id": session_id,
+        "worker_id": worker_id,
+        "storage_area": storage_area or "",
+        "location_name": location_name or "",
+        "db": db,
+        "extra_flags": [],
+    }
+
     try:
-        _get_or_create_user_profile(worker_id, db)
-    except Exception as e:
-        print(f"[UserProfile] Could not create profile for {worker_id}: {e}")
-
-    # ── Fix #2: Detect fuzzy units before Guard so Guard doesn't misclassify them ──
-    fuzzy_hits = extract_fuzzy_units(text)
-    fuzzy_units_hint = ""
-    if fuzzy_hits:
-        pairs = ", ".join(f"'{orig}' → '{corr}'" for orig, corr in fuzzy_hits)
-        fuzzy_units_hint = (
-            f"Fuzzy unit typos detected in this message: {pairs}. "
-            f"Suggest the correction to the worker (action='clarify') and use the corrected unit."
-        )
-
-    # ── Guard: validate items ──
-    # Skip Guard for very short messages — they are almost always corrections, confirmations,
-    # or unit completions. Let ARIA resolve them from conversation history instead.
-    word_count = len(text.split())
-    last_history = _get_conversation_history(session_id, db, limit=1)
-    last_was_clarify = (
-        last_history and
-        last_history[-1].get("role") == "assistant" and
-        any(kw in last_history[-1].get("content", "").lower()
-            for kw in ("did you mean", "could you clarify", "please confirm", "please specify",
-                       "unrecognized", "referring to", "what item", "which item",
-                       "tell me what", "item to add", "quantity", "how much", "how many",
-                       "what unit", "can you tell me"))
-    )
-    skip_guard = word_count <= 3 or last_was_clarify
-
-    guard = {} if skip_guard else await _guard_validate_items(text)
-    if guard.get("has_items") and not guard.get("all_valid"):
-        guard_message = guard.get("guard_message") or "Could you clarify what you mean by that item?"
-        db.add(ConversationMessage(session_id=session_id, role="user", content=text))
-        db.add(ConversationMessage(
-            session_id=session_id, role="assistant",
-            content=guard_message, action_taken="clarify",
-        ))
-        db.commit()
+        final_state = await graph.ainvoke(initial_state)
+    except Exception as exc:
+        logger.error("GRAPH FAILED  error_type=%s  error=%s", type(exc).__name__, exc, exc_info=True)
         return {
-            "message": guard_message,
-            "action": "clarify",
-            "data": {"items": guard.get("items", []), "confirmed": False, "flags": ["incomplete"], "guard": True},
-            "inventory_updated": False,
-            "session_id": session_id,
-        }
-
-    # ── Build all context ──
-    inventory_context = _build_inventory_context(
-        db,
-        storage_area=storage_area or "",
-        location_name=location_name or "",
-    )
-    item_history_context = _build_item_history_context(db)
-    history = _get_conversation_history(session_id, db, limit=30)
-    conversation_history_json = json.dumps(history, indent=2)
-    completion_hint = _build_completion_hint(text, history)
-    user_profile_context = _build_user_profile_context(worker_id, db)
-
-    workspace_storage = storage_area or "General Storage"
-    workspace_context = (
-        f"Location: {location_name or 'Unknown'}\n"
-        f"Storage Area: {workspace_storage}\n"
-        f"IMPORTANT: These values are FIXED by the UI. Always use '{workspace_storage}' as storage_area "
-        f"in every item, regardless of what the worker says in speech."
-    ) if storage_area else (
-        f"No specific workspace set. Use 'General Storage' as default storage_area."
-    )
-
-    pending = _pending_actions.get(session_id)
-    affirmation_detected = _is_affirmation(text) and pending is not None
-
-    if affirmation_detected:
-        # Hard override: worker clearly said yes — force ARIA to execute, no more asking
-        pending_action_context = (
-            f"⚡ AFFIRMATION DETECTED — worker said '{text}' which means YES/CONFIRMED.\n"
-            f"Execute this NOW: action='update', confirmed=true.\n"
-            f"Pending:\n{json.dumps(pending, indent=2)}"
-        )
-    elif pending:
-        pending_action_context = (
-            f"Pending confirmation for this session:\n{json.dumps(pending, indent=2)}\n"
-            "If the worker says yes/confirm/proceed/that's correct, execute this (action='update', confirmed=true)."
-        )
-    else:
-        pending_action_context = "No pending action."
-
-    if completion_hint:
-        pending_action_context = completion_hint + "\n\n" + pending_action_context
-
-    # ── Run ARIA crew ──
-    try:
-        parsed = await asyncio.to_thread(
-            aria_process,
-            text,
-            inventory_context,
-            item_history_context,
-            conversation_history_json,
-            workspace_context,
-            pending_action_context,
-            worker_id,
-            str(date_type.today()),
-            user_profile_context=user_profile_context,
-            fuzzy_units_hint=fuzzy_units_hint,
-        )
-    except Exception as e:
-        err_type = "timed out" if "timeout" in str(e).lower() or "timed out" in str(e).lower() else "failed"
-        print(f"[ARIA Crew] {err_type}: {e}")
-        return {
-            "message": f"The AI service {err_type} — please try again in a moment.",
+            "message": "The AI service failed — please try again in a moment.",
             "action": "none",
             "data": {"items": [], "confirmed": False, "flags": []},
             "inventory_updated": False,
             "session_id": session_id,
         }
 
-    action = parsed.get("action", "none")
-    data = parsed.get("data", {})
-    if "items" not in data:
-        data["items"] = []
-    inventory_updated = False
-
-    items_list = _normalize_items(data)
-
-    # ── Guard: non-food items ──
-    non_food = [i["item_name"] for i in items_list if _is_non_food_item(i.get("item_name", ""))]
-    if non_food:
-        action = "none"
-        parsed["action"] = "none"
-        parsed["message"] = (
-            f"I can only manage food, beverage, and kitchen supply inventory. "
-            f"'{', '.join(non_food)}' {'don\'t' if len(non_food) > 1 else 'doesn\'t'} appear to be "
-            f"food or kitchen items. Please check if you meant something else."
-        )
-        data.setdefault("flags", []).append("not_relevant")
-
-    # ── Unit mismatch flag (for non-update actions) ──
-    if action not in ("update", "none"):
-        for item in items_list:
-            if item.get("item_name") and item.get("unit"):
-                conflict_unit = _detect_unit_conflict(item["item_name"], item["unit"], db)
-                if conflict_unit:
-                    data.setdefault("flags", []).append("unit_mismatch")
-                    break
-
-    # ── Suspicious quantity check ──
-    if action == "confirm":
-        for item in items_list:
-            if item.get("item_name") and item.get("quantity"):
-                if _detect_suspicious_quantity(item["item_name"], item["quantity"], db):
-                    data.setdefault("flags", []).append("suspicious_quantity")
-                    break
-
-    # ── Storage appropriateness check ──
-    if action == "confirm":
-        for item in items_list:
-            warning = _check_storage_appropriateness(
-                item.get("item_name", ""),
-                item.get("category", ""),
-                workspace_storage,   # always check against the REAL workspace, not AI's suggestion
-            )
-            if warning:
-                data.setdefault("flags", []).append("storage_warning")
-                parsed["message"] = parsed.get("message", "") + f"\n{warning}"
-                break
-
-    # ── Same-day conflict check ──
-    if action == "confirm":
-        for item in items_list:
-            if item.get("item_name") and item.get("quantity") and item.get("storage_area"):
-                conflict_msg = _detect_same_day_conflict(
-                    item["item_name"], item["storage_area"], worker_id, item["quantity"], db
-                )
-                if conflict_msg:
-                    data.setdefault("flags", []).append("conflict")
-                    parsed["message"] += f" ⚠ {conflict_msg}. Still confirm?"
-                    break
-
-    # ── Store pending — override storage_area with real workspace so confirm card is accurate ──
-    if action == "confirm":
-        if workspace_storage:
-            for item in data.get("items", []):
-                if isinstance(item, dict):
-                    item["storage_area"] = workspace_storage
-        _pending_actions[session_id] = data
-
-    # ── Execute when confirmed ──
-    if action == "update" and data.get("confirmed"):
-        pending = _pending_actions.get(session_id, data)
-        inventory_updated = _execute_inventory_updates(
-            pending, worker_id, db,
-            workspace_location=location_name or "",
-            workspace_storage=storage_area or "",
-        )
-        _pending_actions.pop(session_id, None)
-
-    # ── Handle "yes"/"ok" intent confirming a pending action ──
-    if action == "none" and parsed.get("intent") == "confirm":
-        pending = _pending_actions.get(session_id)
-        if pending:
-            inventory_updated = _execute_inventory_updates(
-                pending, worker_id, db,
-                workspace_location=location_name or "",
-                workspace_storage=storage_area or "",
-            )
-            _pending_actions.pop(session_id, None)
-
-    # ── Python-level fallback: affirmation detected but ARIA still didn't execute ──
-    if affirmation_detected and not inventory_updated and session_id in _pending_actions:
-        pending = _pending_actions.pop(session_id)
-        inventory_updated = _execute_inventory_updates(
-            pending, worker_id, db,
-            workspace_location=location_name or "",
-            workspace_storage=storage_area or "",
-        )
-        if inventory_updated and parsed.get("action") not in ("update",):
-            parsed["message"] = f"Done! Added to {storage_area or 'storage'}."
-            action = "update"
-
-    # ── Clear pending on denial intent (belt-and-suspenders) ──
-    if parsed.get("intent") == "deny":
-        _pending_actions.pop(session_id, None)
-
-    # ── Save conversation ──
-    db.add(ConversationMessage(session_id=session_id, role="user", content=text))
-    db.add(ConversationMessage(
-        session_id=session_id,
-        role="assistant",
-        content=parsed.get("message", ""),
-        action_taken=action if action != "none" else None,
-    ))
-    db.commit()
-
-    # ── Save user insights (emotion, lexicons, personality) ──
-    try:
-        _save_user_insights(worker_id, parsed, db)
-    except Exception as e:
-        import traceback
-        print(f"[UserInsights] Failed to save for {worker_id}: {type(e).__name__}: {e}")
-        traceback.print_exc()
-
-    # Deduplicate flags (ARIA + Python checks can both append the same flag)
-    if "flags" in data:
-        data["flags"] = list(dict.fromkeys(data["flags"]))
-
     return {
-        "message": parsed.get("message", ""),
-        "action": action,
-        "data": data,
-        "inventory_updated": inventory_updated,
+        "message": final_state.get("message", ""),
+        "action": final_state.get("action", "none"),
+        "data": final_state.get("data", {"items": [], "confirmed": False, "flags": []}),
+        "inventory_updated": final_state.get("inventory_updated", False),
         "session_id": session_id,
     }
