@@ -2,14 +2,55 @@ import axios from 'axios'
 
 const api = axios.create({ baseURL: '/api', timeout: 35000 })
 
-export const processVoiceText = (text, sessionId, workerId = 'worker', storageArea = null, locationName = null) =>
+export const processVoiceText = (text, sessionId, workerId = 'worker', storageArea = null, locationName = null, messages = []) =>
   api.post('/voice/process', {
     text,
     session_id: sessionId,
     worker_id: workerId,
     storage_area: storageArea,
     location_name: locationName,
+    messages: messages.map(m => ({ role: m.role, content: m.text })),
   })
+
+export const streamVoiceText = async (text, sessionId, workerId = 'worker', storageArea = null, locationName = null, messages = [], onEvent) => {
+  const response = await fetch('/api/voice/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text,
+      session_id: sessionId,
+      worker_id: workerId,
+      storage_area: storageArea,
+      location_name: locationName,
+      messages: messages.map(m => ({ role: m.role, content: m.text })),
+    }),
+  })
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = 'status'
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    const parts = buffer.split('\n')
+    buffer = parts.pop() ?? ''
+    for (const line of parts) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim()
+      } else if (line.startsWith('data: ')) {
+        try {
+          const data = JSON.parse(line.slice(6))
+          onEvent(currentEvent, data)
+        } catch { /* malformed JSON — skip */ }
+        currentEvent = 'status'
+      }
+    }
+  }
+}
 
 export const transcribeAudio = (formData) =>
   api.post('/voice/transcribe', formData, { headers: { 'Content-Type': 'multipart/form-data' } })

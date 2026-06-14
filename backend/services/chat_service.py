@@ -37,20 +37,432 @@ from logging_config import J, new_trace, get_trace, separator
 
 logger = logging.getLogger(__name__)
 
-_STATUS_BY_NODE: dict[str, str] = {
-    "load_context":   "Loading inventory context…",
-    "load_memory":    "Retrieving worker memories…",
-    "preprocess":     "Preprocessing message…",
-    "intent":         "Classifying intent…",
-    "extraction":     "Extracting inventory items…",
-    "guard":          "Validating inventory items…",
-    "aria":           "ARIA is thinking…",
-    "validate":       "Validating response…",
-    "execute":        "Updating inventory…",
-    "persist_memory": "Saving to memory…",
-    "rejected":       "Clarification needed…",
-    "clarify":        "Preparing clarification…",
-}
+def _trunc(s: str, n: int = 100) -> str:
+    return (s[:n] + "…") if len(s) > n else s
+
+
+def _build_rich_status(node_name: str, delta: dict, state: dict | None = None) -> dict | None:
+    """Build a rich status event from a completed node's delta + accumulated state.
+
+    Returns a dict with step/icon/label/detail/reasoning/input/output so the
+    frontend can drill into what each agent received, thought, and decided.
+    state contains all keys accumulated from prior nodes (useful for ARIA/validate
+    which need to know what context was available upstream).
+    """
+    s = state or {}
+
+    # ── load_context ─────────────────────────────────────────────────────────
+    if node_name == "load_context":
+        inv = delta.get("inventory_context") or ""
+        conv = delta.get("conversation_history") or []
+        pending = delta.get("pending_action")
+        item_count = inv.count("•")
+        parts = [f"{item_count} items in stock"]
+        if conv:
+            parts.append(f"{len(conv)} conv turns")
+        if pending:
+            parts.append("pending action")
+        inv_lines = [l.strip() for l in inv.split("\n") if "•" in l][:10]
+        recent_turns = [
+            {"role": t.get("role", "?"), "said": _trunc(t.get("content", ""), 100)}
+            for t in (conv[-4:] if conv else [])
+        ]
+        return {
+            "step": "context", "icon": "📦", "label": "Context",
+            "detail": " · ".join(parts),
+            "input": {
+                "worker": s.get("worker_id", "?"),
+                "storage_area": s.get("storage_area") or "none",
+                "location": s.get("location_name") or "none",
+            },
+            "output": {
+                "inventory_items": item_count,
+                "inventory_data": inv_lines or None,
+                "conversation_turns": len(conv),
+                "recent_turns": recent_turns or None,
+                "pending_action": bool(pending),
+                "rejection_log": bool(delta.get("rejection_context")),
+                "session_digest": bool(delta.get("session_digest")),
+            },
+        }
+
+    # ── load_memory ───────────────────────────────────────────────────────────
+    if node_name == "load_memory":
+        memories = delta.get("user_memories") or []
+        detail = f"{len(memories)} worker memories" if memories else "no memories yet"
+        memory_texts = [
+            _trunc((m.get("memory") or m.get("text") or "").strip(), 120)
+            for m in memories[:5]
+            if (m.get("memory") or m.get("text") or "").strip()
+        ]
+        return {
+            "step": "memory", "icon": "🧬", "label": "Memory",
+            "detail": detail,
+            "input": {"worker": s.get("worker_id", "?"), "source": "Mem0"},
+            "output": {
+                "memories_loaded": len(memories),
+                "profile_source": "Mem0" if memories else "DB (fallback)",
+                "memories": memory_texts or None,
+            },
+        }
+
+    # ── preprocess ────────────────────────────────────────────────────────────
+    if node_name == "preprocess":
+        is_aff = delta.get("is_affirmation", False)
+        fuzzy = delta.get("fuzzy_units_hint") or ""
+        fragment = delta.get("fragment_hint") or ""
+        text = s.get("text", "")
+        detail = ("affirmation → fast path" if is_aff
+                  else "fuzzy unit detected" if fuzzy
+                  else "clean")
+        return {
+            "step": "preprocess", "icon": "⚙️", "label": "Preprocess",
+            "detail": detail,
+            "input": {
+                "message": _trunc(text, 80),
+                "pending_action_exists": bool(s.get("pending_action")),
+            },
+            "output": {
+                "is_affirmation": is_aff,
+                "fuzzy_units": _trunc(fuzzy, 80) if fuzzy else None,
+                "fragment_hint": _trunc(fragment, 80) if fragment else None,
+            },
+        }
+
+    # ── intent ────────────────────────────────────────────────────────────────
+    if node_name == "intent":
+        ir = delta.get("intent_result") or {}
+        intent = ir.get("intent", "?")
+        conf = ir.get("confidence", 0.0)
+        reasoning = ir.get("reasoning") or ""
+        slot_item = ir.get("slot_item") or ""
+        slot_qty = ir.get("slot_quantity")
+        slot_unit = ir.get("slot_unit") or ""
+        text = s.get("text", "")
+        conv = s.get("conversation_history") or []
+        pending = s.get("pending_action")
+        detail = f"{intent} · {conf:.0%}"
+        if slot_item:
+            qty_str = f"{slot_qty} {slot_unit}".strip() if slot_qty is not None else ""
+            detail += f" — {slot_item}" + (f" · {qty_str}" if qty_str else "")
+
+        pending_summary = None
+        if pending:
+            p_items = pending.get("items") or []
+            pending_summary = ", ".join(
+                f"{i.get('quantity')} {i.get('unit','').strip()} {i.get('item_name','')}".strip()
+                for i in p_items[:2] if i.get("item_name")
+            ) or "yes"
+
+        return {
+            "step": "intent", "icon": "🧠", "label": "Intent",
+            "detail": detail,
+            "reasoning": _trunc(reasoning, 300) if reasoning else None,
+            "input": {
+                "message": _trunc(text, 100),
+                "model": "gpt-4o-mini (temp=0)",
+                "history_turns_shown": min(len(conv), 6),
+                "pending_action": pending_summary or "none",
+            },
+            "output": {
+                "intent": intent,
+                "confidence": f"{conf:.0%}",
+                "slot_item": slot_item or None,
+                "slot_quantity": slot_qty,
+                "slot_unit": slot_unit or None,
+                "needs_clarification": ir.get("needs_clarification", False),
+            },
+        }
+
+    # ── guard ─────────────────────────────────────────────────────────────────
+    if node_name == "guard":
+        gr = delta.get("guard_result") or {}
+        rejected = delta.get("guard_rejected", False)
+        text = s.get("text", "")
+        if not gr:
+            detail = "skipped"
+            items_out: list[dict] = []
+        elif rejected:
+            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
+            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
+            items_out = [
+                {"name": i.get("name"), "valid": i.get("is_valid"),
+                 "ambiguous": i.get("is_ambiguous"), "concern": i.get("concern", "")}
+                for i in gr.get("items", [])
+            ]
+        else:
+            detail = "passed"
+            items_out = [{"name": i.get("name"), "valid": True}
+                         for i in gr.get("items", [])]
+        return {
+            "step": "guard", "icon": "🛡️", "label": "Guard",
+            "detail": detail,
+            "input": {
+                "message": _trunc(text, 80),
+                "model": "gpt-4o-mini",
+                "word_count": len(text.split()),
+            },
+            "output": {
+                "result": "rejected" if rejected else ("skipped" if not gr else "passed"),
+                "items": items_out or None,
+                "guard_message": gr.get("guard_message") or None,
+            },
+        }
+
+    # ── extraction ────────────────────────────────────────────────────────────
+    if node_name == "extraction":
+        er = delta.get("extraction_result") or {}
+        text = s.get("text", "")
+        if not er:
+            return {
+                "step": "extract", "icon": "🔍", "label": "Extract",
+                "detail": "skipped",
+                "input": {"reason": "affirmation / query / short message"},
+                "output": {"items": None},
+            }
+        items = er.get("items") or []
+        conf = (er.get("inventory_session") or {}).get("overall_confidence", "")
+        if items:
+            names = ", ".join(
+                f"{i.get('canonical_name') or i.get('raw_text', '?')} "
+                f"{i.get('quantity', '') or ''} {i.get('unit', '') or ''}".strip()
+                for i in items[:2]
+            )
+            detail = f"{len(items)} item{'s' if len(items) != 1 else ''} · {names}"
+            if conf:
+                detail += f" · {conf}"
+        else:
+            detail = "no items parsed"
+        items_out = [
+            {
+                "raw": i.get("raw_text", "?"),
+                "canonical": i.get("canonical_name", "?"),
+                "category": i.get("category", "UNKNOWN"),
+                "quantity": i.get("quantity"),
+                "unit": i.get("unit", ""),
+                "confidence": i.get("confidence", "?"),
+                "catalog_match": i.get("matched_catalog_item") or "UNKNOWN",
+                "errors": ", ".join(i.get("validation_errors") or []) or None,
+            }
+            for i in items
+        ]
+        return {
+            "step": "extract", "icon": "🔍", "label": "Extract",
+            "detail": detail,
+            "input": {
+                "message": _trunc(text, 80),
+                "model": "gpt-4o",
+            },
+            "output": {
+                "overall_confidence": conf or "?",
+                "items": items_out or None,
+            },
+        }
+
+    # ── priority ──────────────────────────────────────────────────────────────
+    if node_name == "priority":
+        focus = delta.get("priority_focus") or ""
+        ph = delta.get("priority_conversation_history") or []
+        filtered_inv = delta.get("priority_inventory_context") or ""
+        orig_inv = s.get("inventory_context") or ""
+        orig_hist = len(s.get("conversation_history") or [])
+        detail = f"focus: {focus}" if focus else f"{len(ph)} turns kept"
+        return {
+            "step": "priority", "icon": "📌", "label": "Priority",
+            "detail": detail,
+            "input": {
+                "inventory_items": orig_inv.count("•"),
+                "history_turns": orig_hist,
+                "intent": s.get("pre_classified_intent", "?"),
+            },
+            "output": {
+                "focus": focus or "all items",
+                "inventory_filtered_to": filtered_inv.count("•"),
+                "history_kept": len(ph),
+            },
+        }
+
+    # ── aria ──────────────────────────────────────────────────────────────────
+    if node_name == "aria":
+        ar = delta.get("aria_result") or {}
+        action = ar.get("action", "?")
+        items = (ar.get("data") or {}).get("items") or []
+        emotion = ar.get("user_emotion") or ""
+        message = ar.get("message") or ""
+        flags = (ar.get("data") or {}).get("flags") or []
+        new_lexicons = ar.get("new_lexicons") or []
+        personality = ar.get("personality_note") or ""
+
+        parts = [f"action={action}"]
+        if items:
+            parts.append(", ".join(
+                f"{i.get('item_name','?')}"
+                + (f" {i.get('quantity')} {i.get('unit','').strip()}".rstrip()
+                   if i.get("quantity") is not None else "")
+                for i in items[:2]
+            ))
+        if emotion and emotion not in ("neutral", ""):
+            parts.append(emotion)
+
+        # Build what ARIA saw (from accumulated priority context)
+        pri_inv = s.get("priority_inventory_context") or s.get("inventory_context") or ""
+        pri_hist = s.get("priority_conversation_history") or s.get("conversation_history") or []
+        pri_focus = s.get("priority_focus") or "all"
+        ext_res = s.get("extraction_result") or {}
+        ext_items = ext_res.get("items") or []
+        ir = s.get("intent_result") or {}
+        slot_parts = []
+        if ir.get("slot_item"):
+            slot_parts.append(f"item='{ir['slot_item']}'")
+        if ir.get("slot_quantity") is not None:
+            slot_parts.append(f"qty={ir['slot_quantity']}")
+        if ir.get("slot_unit"):
+            slot_parts.append(f"unit='{ir['slot_unit']}'")
+        pending = s.get("pending_action")
+        pending_summary = None
+        if pending:
+            p_items = pending.get("items") or []
+            pending_summary = ", ".join(
+                f"{i.get('quantity')} {i.get('unit','').strip()} {i.get('item_name','')}".strip()
+                for i in p_items[:2] if i.get("item_name")
+            ) or "yes"
+
+        pri_inv_lines = [l.strip() for l in pri_inv.split("\n") if "•" in l][:8]
+        ext_items_out = [
+            {
+                "raw": i.get("raw_text", "?"),
+                "canonical": i.get("canonical_name"),
+                "qty": i.get("quantity"),
+                "unit": i.get("unit", ""),
+                "confidence": i.get("confidence", "?"),
+            }
+            for i in ext_items[:4]
+        ]
+        items_out = [
+            {
+                "name": i.get("item_name"),
+                "quantity": i.get("quantity"),
+                "unit": i.get("unit", ""),
+                "operation": i.get("operation", ""),
+                "storage_area": i.get("storage_area", ""),
+                "category": i.get("category", ""),
+            }
+            for i in items
+        ]
+
+        return {
+            "step": "aria", "icon": "✨", "label": "ARIA",
+            "detail": " · ".join(parts),
+            "input": {
+                "model": "gpt-4o",
+                "inventory_context_shown": pri_inv_lines or None,
+                "history_turns_shown": len(pri_hist),
+                "context_focus": pri_focus,
+                "intent": s.get("pre_classified_intent", "?"),
+                "slots": ", ".join(slot_parts) if slot_parts else "none",
+                "extracted_items": ext_items_out or None,
+                "pending_action": pending_summary or "none",
+                "is_affirmation": s.get("is_affirmation", False),
+            },
+            "output": {
+                "action": action,
+                "message": message,
+                "items": items_out or None,
+                "flags": flags or None,
+                "emotion": emotion or "neutral",
+                "new_lexicons": [l.get("original_word", "") for l in new_lexicons if l.get("original_word")] or None,
+                "personality_note": _trunc(personality, 150) if personality else None,
+            },
+        }
+
+    # ── validate ──────────────────────────────────────────────────────────────
+    if node_name == "validate":
+        flags = delta.get("extra_flags") or []
+        ar = delta.get("aria_result") or {}
+        action = ar.get("action", "?")
+        items = (ar.get("data") or {}).get("items") or []
+        detail = f"flags: {', '.join(flags)}" if flags else f"clean · action={action}"
+        _flag_info = {
+            "unit_mismatch": "unit differs from stored history",
+            "suspicious_quantity": "qty > 10× previous count",
+            "storage_warning": "item unusual for this storage area",
+            "conflict": "same-day write conflict",
+            "not_relevant": "non-food item",
+        }
+        return {
+            "step": "validate", "icon": "✔️", "label": "Validate",
+            "detail": detail,
+            "input": {
+                "action": action,
+                "items": [
+                    {"name": i.get("item_name"), "qty": i.get("quantity"),
+                     "unit": i.get("unit", ""), "category": i.get("category", "")}
+                    for i in items[:4]
+                ] or None,
+            },
+            "output": {
+                "action_after": action,
+                "flags": [{"flag": f, "meaning": _flag_info.get(f, f)} for f in flags] or None,
+                "clean": not bool(flags),
+            },
+        }
+
+    # ── execute ───────────────────────────────────────────────────────────────
+    if node_name == "execute":
+        updated = delta.get("inventory_updated", False)
+        action = delta.get("action", "?")
+        items = (delta.get("data") or {}).get("items") or []
+        flags = (delta.get("data") or {}).get("flags") or []
+        if updated and items:
+            names = ", ".join(
+                f"{i.get('item_name', '?')} {i.get('quantity', '')} {i.get('unit', '')}".strip()
+                for i in items[:2] if i.get("item_name")
+            )
+            detail = f"saved · {names}" if names else "inventory updated"
+        elif action == "confirm":
+            detail = "stored · awaiting confirmation"
+        else:
+            detail = "no DB write"
+        items_written = [
+            {"name": i.get("item_name"), "qty": i.get("quantity"),
+             "unit": i.get("unit", ""), "op": i.get("operation", ""),
+             "area": i.get("storage_area", "")}
+            for i in items if i.get("item_name")
+        ] if updated else None
+        return {
+            "step": "execute", "icon": "💾", "label": "Execute",
+            "detail": detail,
+            "input": {
+                "action": action,
+                "items_to_process": len(items),
+            },
+            "output": {
+                "inventory_updated": updated,
+                "pending_stored": action == "confirm" and not updated,
+                "items_written": items_written,
+                "flags": flags or None,
+            },
+        }
+
+    # ── clarify / rejected ────────────────────────────────────────────────────
+    if node_name in ("clarify", "rejected"):
+        msg = delta.get("message") or ""
+        icon = "🚫" if node_name == "rejected" else "❓"
+        label = "Guard" if node_name == "rejected" else "Clarify"
+        ir = s.get("intent_result") or {}
+        return {
+            "step": "clarify", "icon": icon, "label": label,
+            "detail": _trunc(msg, 70),
+            "input": {
+                "intent": ir.get("intent", "?"),
+                "confidence": f"{ir.get('confidence', 0):.0%}",
+                "reason": node_name,
+            },
+            "output": {"message_to_worker": msg},
+        }
+
+    # persist_memory fires after done is emitted — skip to avoid post-done SSE noise
+    return None
 
 _TERMINAL_NODES = {"execute", "rejected", "clarify"}
 _PING_INTERVAL = 15.0
@@ -257,9 +669,9 @@ class ChatService:
                     if isinstance(delta, dict):
                         final_state.update(delta)
 
-                    status_msg = _STATUS_BY_NODE.get(node_name)
-                    if status_msg:
-                        yield _sse_event({"message": status_msg}, event_name="status")
+                    status_event = _build_rich_status(node_name, delta if isinstance(delta, dict) else {}, final_state)
+                    if status_event:
+                        yield _sse_event(status_event, event_name="status")
 
                     if node_name in _TERMINAL_NODES and isinstance(delta, dict):
                         payload = _response_payload(delta)

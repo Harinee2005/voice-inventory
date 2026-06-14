@@ -2,24 +2,92 @@ import asyncio
 import json
 import logging
 import os
-from typing import Optional
+from typing import Optional, AsyncGenerator, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func
-from models import ConversationMessage, ActivityLog, InventoryItem, UserProfile, UserLexicon
+from sqlalchemy import func, text
+from models import ConversationMessage, ActivityLog, InventoryItem, UserProfile, UserLexicon, PendingAction, RejectedItem
 from utils.unit_converter import normalize_unit, can_convert, convert, are_compatible_units, extract_fuzzy_units
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timedelta
 from logging_config import J
 
 logger = logging.getLogger(__name__)
 
-_pending_actions: dict = {}
+_PENDING_TTL_MINUTES = int(os.getenv("PENDING_TTL_MINUTES", "15"))
+_SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "4"))
 
 
-def clear_session_pending(session_id: str) -> None:
-    had = session_id in _pending_actions
-    _pending_actions.pop(session_id, None)
-    if had:
-        logger.info("PENDING CLEARED  session=%s  (manual clear)", session_id)
+# ── DB-backed pending action store ────────────────────────────────────────────
+
+def get_pending_action(session_id: str, db: Session) -> dict | None:
+    row = db.query(PendingAction).filter(PendingAction.session_id == session_id).first()
+    if not row:
+        return None
+    if row.expires_at < datetime.utcnow():
+        db.delete(row)
+        db.commit()
+        logger.info("PENDING EXPIRED  session=%s", session_id)
+        return None
+    return json.loads(row.payload)
+
+
+def set_pending_action(session_id: str, data: dict, db: Session) -> None:
+    payload = json.dumps(data)
+    expires = datetime.utcnow() + timedelta(minutes=_PENDING_TTL_MINUTES)
+    row = db.query(PendingAction).filter(PendingAction.session_id == session_id).first()
+    if row:
+        row.payload = payload
+        row.expires_at = expires
+        row.created_at = datetime.utcnow()
+    else:
+        db.add(PendingAction(session_id=session_id, payload=payload, expires_at=expires))
+    db.commit()
+    logger.info("PENDING SET  session=%s  expires=%s", session_id, expires.isoformat())
+
+
+def clear_pending_action(session_id: str, db: Session) -> None:
+    deleted = db.query(PendingAction).filter(PendingAction.session_id == session_id).delete()
+    db.commit()
+    if deleted:
+        logger.info("PENDING CLEARED  session=%s", session_id)
+
+
+def clear_session_pending(session_id: str, db: Session | None = None) -> None:
+    """Clear pending action for a session. Accepts optional db for router callers."""
+    if db is not None:
+        clear_pending_action(session_id, db)
+    else:
+        logger.warning("clear_session_pending called without db — no-op (DB-backed store requires db)")
+
+
+# ── Guard rejection log ───────────────────────────────────────────────────────
+
+def save_guard_rejections(session_id: str, guard_result: dict, db: Session) -> None:
+    """Persist rejected/ambiguous items so ARIA doesn't re-suggest them this session."""
+    items = guard_result.get("items", [])
+    for item in items:
+        if not item.get("is_valid") or item.get("is_ambiguous"):
+            db.add(RejectedItem(
+                session_id=session_id,
+                item_name=item.get("name", ""),
+                reason=item.get("concern") or ("ambiguous" if item.get("is_ambiguous") else "non-food"),
+            ))
+    if items:
+        db.commit()
+
+
+def load_recent_rejections(session_id: str, db: Session, limit: int = 3) -> str:
+    """Return a context string listing recently rejected items for this session."""
+    rows = (
+        db.query(RejectedItem)
+        .filter(RejectedItem.session_id == session_id)
+        .order_by(RejectedItem.timestamp.desc())
+        .limit(limit)
+        .all()
+    )
+    if not rows:
+        return ""
+    lines = [f"• {r.item_name} ({r.reason})" for r in rows]
+    return "## Items rejected this session (do NOT re-suggest)\n" + "\n".join(lines)
 
 import re as _re
 
@@ -218,64 +286,60 @@ def _build_inventory_context(
     location_name: str = "",
 ) -> str:
     today = date_type.today()
-    items = (
-        db.query(InventoryItem)
-        .filter(InventoryItem.count_date == today)
-        .order_by(InventoryItem.item_name)
-        .limit(40)
-        .all()
-    )
-    if not items:
+    rows = db.execute(
+        text("SELECT * FROM v_today_inventory WHERE count_date = :today ORDER BY item_name LIMIT 40"),
+        {"today": str(today)},
+    ).mappings().all()
+
+    if not rows:
         return f"No items counted yet today ({today}). Inventory is fresh for today."
 
-    # Pre-compute grand total across all locations
     grand_total = sum(
-        round(i.quantity * i.unit_price, 2)
-        for i in items
-        if i.quantity and i.unit_price
+        round(r["quantity"] * r["unit_price"], 2)
+        for r in rows
+        if r["quantity"] and r["unit_price"]
     )
 
     lines = [
-        f"Today's inventory ({today}):",
+        f"Today's inventory ({today}) [source: v_today_inventory]:",
         f"  [Grand total across ALL locations: ${round(grand_total, 2):.2f} — use this exact figure when asked about all-location totals]",
     ]
-    for item in items:
-        flag = " [FLAGGED]" if item.is_flagged else ""
-        expiry = f", expires {item.expiry_date}" if item.expiry_date else ""
-        loc = f"{item.storage_area}"
-        if item.location_name:
-            loc = f"{item.location_name} › {item.storage_area}"
-        price = f", ~${item.unit_price:.2f}/{item.unit}" if item.unit_price else ""
+    for r in rows:
+        flag = " [FLAGGED]" if r["is_flagged"] else ""
+        expiry = f", expires {r['expiry_date']}" if r["expiry_date"] else ""
+        loc = f"{r['storage_area']}"
+        if r["location_name"]:
+            loc = f"{r['location_name']} › {r['storage_area']}"
+        price = f", ~${r['unit_price']:.2f}/{r['unit']}" if r["unit_price"] else ""
         lines.append(
-            f"  • {item.item_name} ({item.category}): {item.quantity} {item.unit}"
-            f"{price} @ {loc}, counted by {item.updated_by}{expiry}{flag}"
+            f"  • {r['item_name']} ({r['category']}): {r['quantity']} {r['unit']}"
+            f"{price} @ {loc}, counted by {r['updated_by']}{expiry}{flag}"
         )
 
-    # Workspace-specific pre-computed summary — prevents LLM arithmetic errors
     if storage_area:
-        workspace_items = [
-            i for i in items
-            if i.storage_area == storage_area
-            and (not location_name or i.location_name == location_name)
+        workspace_rows = [
+            r for r in rows
+            if r["storage_area"] == storage_area
+            and (not location_name or r["location_name"] == location_name)
         ]
-        if workspace_items:
+        if workspace_rows:
             workspace_label = f"{location_name} › {storage_area}" if location_name else storage_area
             total_value = sum(
-                round(i.quantity * i.unit_price, 2)
-                for i in workspace_items
-                if i.quantity and i.unit_price
+                round(r["quantity"] * r["unit_price"], 2)
+                for r in workspace_rows
+                if r["quantity"] and r["unit_price"]
             )
             lines.append(f"\n## Pre-computed workspace summary for '{workspace_label}'")
-            lines.append(f"  Item count: {len(workspace_items)}")
+            lines.append(f"  Item count: {len(workspace_rows)}")
             lines.append(f"  Total value: ${round(total_value, 2):.2f}")
             lines.append("  Items:")
-            for i in workspace_items:
-                item_total = round(i.quantity * i.unit_price, 2) if i.quantity and i.unit_price else 0.0
+            for r in workspace_rows:
+                item_total = round(r["quantity"] * r["unit_price"], 2) if r["quantity"] and r["unit_price"] else 0.0
                 price_str = (
-                    f"{i.quantity} {i.unit} × ${i.unit_price:.2f} = ${item_total:.2f}"
-                    if i.unit_price else f"{i.quantity} {i.unit} (no price)"
+                    f"{r['quantity']} {r['unit']} × ${r['unit_price']:.2f} = ${item_total:.2f}"
+                    if r["unit_price"] else f"{r['quantity']} {r['unit']} (no price)"
                 )
-                lines.append(f"    - {i.item_name}: {price_str}")
+                lines.append(f"    - {r['item_name']}: {price_str}")
             lines.append(
                 f"  IMPORTANT: When asked about total value for '{workspace_label}', "
                 f"always report ${round(total_value, 2):.2f} — do NOT recompute."
@@ -285,34 +349,19 @@ def _build_inventory_context(
 
 
 def _build_item_history_context(db: Session) -> str:
-    """Most recent unit per item across ALL sessions."""
-    subq = (
-        db.query(
-            InventoryItem.item_name,
-            func.max(InventoryItem.timestamp).label("max_ts"),
-        )
-        .group_by(InventoryItem.item_name)
-        .subquery()
-    )
-    items = (
-        db.query(InventoryItem)
-        .join(
-            subq,
-            (InventoryItem.item_name == subq.c.item_name)
-            & (InventoryItem.timestamp == subq.c.max_ts),
-        )
-        .order_by(InventoryItem.item_name)
-        .limit(80)
-        .all()
-    )
-    if not items:
+    """Most recent unit per item across ALL sessions — queries v_item_history view."""
+    rows = db.execute(
+        text("SELECT * FROM v_item_history LIMIT 80")
+    ).mappings().all()
+
+    if not rows:
         return ""
-    lines = ["Known item unit history (most recent record across ALL sessions):"]
-    for item in items:
-        loc = f"{item.location_name} › {item.storage_area}" if item.location_name else item.storage_area
-        price = f", unit_price=${item.unit_price:.2f}" if item.unit_price else ""
+    lines = ["Known item unit history [source: v_item_history]:"]
+    for r in rows:
+        loc = f"{r['location_name']} › {r['storage_area']}" if r["location_name"] else r["storage_area"]
+        price = f", unit_price=${r['unit_price']:.2f}" if r["unit_price"] else ""
         lines.append(
-            f"  • {item.item_name}: {item.unit}{price} @ {loc} (last counted {item.count_date})"
+            f"  • {r['item_name']}: {r['unit']}{price} @ {loc} (last counted {r['count_date']})"
         )
     return "\n".join(lines)
 
@@ -659,6 +708,7 @@ def _execute_single_item(
             InventoryItem.storage_area == storage_area,
             InventoryItem.count_date == today,
         )
+        .with_for_update()
         .first()
     )
 
@@ -683,11 +733,16 @@ def _execute_single_item(
             existing.unit = incoming_unit
         else:
             if stored_unit != incoming_unit:
+                # Units are incompatible — cannot do math across unit systems.
+                # Replace the old stock record with the new quantity in the new unit.
                 logger.info(
-                    "  DB UNIT SWITCH  %s: %s → %s  [INCOMPATIBLE UNIT CHANGE]",
-                    item_name, stored_unit, incoming_unit,
+                    "  DB UNIT SWITCH  %s: %s → %s  [INCOMPATIBLE UNIT CHANGE]  "
+                    "replacing old qty=%s with new qty=%s (no cross-unit add)",
+                    item_name, stored_unit, incoming_unit, existing.quantity, quantity,
                 )
-            if operation == "add":
+                existing.quantity = quantity
+                existing.unit = normalize_unit(unit)
+            elif operation == "add":
                 existing.quantity = round(existing.quantity + quantity, 4)
                 existing.unit = normalize_unit(unit)
             elif operation == "subtract":
@@ -788,6 +843,408 @@ def _normalize_items(data: dict) -> list:
 
 
 # ──────────────────────────────────────────────
+# Streaming helpers — per-node status events for the SSE /stream endpoint
+# ──────────────────────────────────────────────
+
+_NODE_LABELS: dict[str, tuple[str, str]] = {
+    "load_context":   ("📦", "Context"),
+    "load_memory":    ("🧬", "Memory"),
+    "preprocess":     ("⚙️", "Preprocess"),
+    "intent":         ("🧠", "Intent"),
+    "clarify":        ("❓", "Clarify"),
+    "guard":          ("🛡️", "Guard"),
+    "rejected":       ("🚫", "Guard"),
+    "extraction":     ("🔍", "Extract"),
+    "priority":       ("📌", "Priority"),
+    "aria":           ("✨", "ARIA"),
+    "validate":       ("✔️", "Validate"),
+    "execute":        ("💾", "Execute"),
+    "persist_memory": ("💡", "Learn"),
+}
+
+
+def _trunc(s: str, n: int = 100) -> str:
+    return (s[:n] + "…") if s and len(s) > n else (s or "")
+
+
+def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> Optional[dict]:
+    """Build a rich status event from a node's output + accumulated upstream state.
+
+    Returns a dict with icon/label/detail/reasoning/input/output so the
+    frontend can drill into what each agent received, thought, and decided.
+    """
+    label_info = _NODE_LABELS.get(node_name)
+    if not label_info:
+        return None
+    icon, label = label_info
+    s = state or {}
+
+    if node_name == "load_context":
+        inv = output.get("inventory_context") or ""
+        hist = output.get("conversation_history") or []
+        pending = output.get("pending_action")
+        n_items = inv.count("•")
+        parts = [f"{n_items} items in stock"]
+        if hist:
+            parts.append(f"{len(hist)} prior turns")
+        if pending:
+            parts.append("pending action")
+        inv_lines = [l.strip() for l in inv.split("\n") if "•" in l][:10]
+        recent_turns = [
+            {"role": t.get("role", "?"), "said": _trunc(t.get("content", ""), 100)}
+            for t in (hist[-4:] if hist else [])
+        ]
+        return {
+            "icon": icon, "label": label, "detail": " · ".join(parts),
+            "input": {
+                "worker": s.get("worker_id", "?"),
+                "storage_area": s.get("storage_area") or "none",
+                "location": s.get("location_name") or "none",
+            },
+            "output": {
+                "inventory_items": n_items,
+                "inventory_data": inv_lines or None,
+                "conversation_turns": len(hist),
+                "recent_turns": recent_turns or None,
+                "pending_action": bool(pending),
+                "has_rejection_log": bool(output.get("rejection_context")),
+                "has_session_digest": bool(output.get("session_digest")),
+            },
+        }
+
+    if node_name == "load_memory":
+        mems = output.get("user_memories") or []
+        detail = f"{len(mems)} worker memories" if mems else "no memories yet"
+        memory_texts = [
+            _trunc((m.get("memory") or m.get("text") or "").strip(), 120)
+            for m in mems[:5]
+            if (m.get("memory") or m.get("text") or "").strip()
+        ]
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {"worker": s.get("worker_id", "?"), "source": "Mem0"},
+            "output": {
+                "memories_loaded": len(mems),
+                "profile_source": "Mem0" if mems else "DB (fallback)",
+                "memories": memory_texts or None,
+            },
+        }
+
+    if node_name == "preprocess":
+        is_aff = output.get("is_affirmation", False)
+        fuzzy = output.get("fuzzy_units_hint") or ""
+        fragment = output.get("fragment_hint") or ""
+        text = s.get("text", "")
+        detail = ("affirmation → fast path" if is_aff
+                  else "fuzzy unit detected" if fuzzy
+                  else "clean")
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {
+                "message": _trunc(text, 80),
+                "pending_action_exists": bool(s.get("pending_action")),
+            },
+            "output": {
+                "is_affirmation": is_aff,
+                "fuzzy_units": _trunc(fuzzy, 80) if fuzzy else None,
+                "fragment_hint": _trunc(fragment, 80) if fragment else None,
+            },
+        }
+
+    if node_name == "intent":
+        ir = output.get("intent_result") or {}
+        intent = output.get("pre_classified_intent") or ir.get("intent", "?")
+        conf = output.get("intent_confidence") or ir.get("confidence", 0.0)
+        reasoning = ir.get("reasoning") or ""
+        slot_item = ir.get("slot_item") or ""
+        slot_qty = ir.get("slot_quantity")
+        slot_unit = ir.get("slot_unit") or ""
+        text = s.get("text", "")
+        conv = s.get("conversation_history") or []
+        pending = s.get("pending_action")
+        detail = f"{intent} · {conf:.0%}"
+        if slot_item:
+            qty_str = f"{slot_qty} {slot_unit}".strip() if slot_qty is not None else ""
+            detail += f" — {slot_item}" + (f" · {qty_str}" if qty_str else "")
+        pending_summary = None
+        if pending:
+            p_items = pending.get("items") or []
+            pending_summary = ", ".join(
+                f"{i.get('quantity')} {i.get('unit','').strip()} {i.get('item_name','')}".strip()
+                for i in p_items[:2] if i.get("item_name")
+            ) or "yes"
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "reasoning": _trunc(reasoning, 300) if reasoning else None,
+            "input": {
+                "message": _trunc(text, 100),
+                "model": "gpt-4o-mini (temp=0)",
+                "history_turns_shown": min(len(conv), 6),
+                "pending_action": pending_summary or "none",
+            },
+            "output": {
+                "intent": intent,
+                "confidence": f"{conf:.0%}",
+                "slot_item": slot_item or None,
+                "slot_quantity": slot_qty,
+                "slot_unit": slot_unit or None,
+                "needs_clarification": ir.get("needs_clarification", False),
+            },
+        }
+
+    if node_name == "guard":
+        gr = output.get("guard_result") or {}
+        rejected = output.get("guard_rejected", False)
+        text = s.get("text", "")
+        if not gr:
+            detail = "skipped"
+            items_out: list = []
+        elif rejected:
+            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
+            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
+            items_out = [
+                {"name": i.get("name"), "valid": i.get("is_valid"),
+                 "ambiguous": i.get("is_ambiguous"), "concern": i.get("concern", "")}
+                for i in gr.get("items", [])
+            ]
+        else:
+            detail = "passed"
+            items_out = [{"name": i.get("name"), "valid": True} for i in gr.get("items", [])]
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {
+                "message": _trunc(text, 80),
+                "model": "gpt-4o-mini",
+                "word_count": len(text.split()),
+            },
+            "output": {
+                "result": "rejected" if rejected else ("skipped" if not gr else "passed"),
+                "items": items_out or None,
+                "guard_message": gr.get("guard_message") or None,
+            },
+        }
+
+    if node_name == "extraction":
+        er = output.get("extraction_result") or {}
+        text = s.get("text", "")
+        if not er:
+            return {
+                "icon": icon, "label": label, "detail": "skipped",
+                "input": {"reason": "affirmation / query / short message"},
+                "output": {"items": None},
+            }
+        items = er.get("items") or []
+        conf = (er.get("inventory_session") or {}).get("overall_confidence", "")
+        if items:
+            names = ", ".join(
+                f"{i.get('canonical_name') or i.get('raw_text','?')} "
+                f"{i.get('quantity','') or ''} {i.get('unit','') or ''}".strip()
+                for i in items[:2]
+            )
+            detail = f"{len(items)} item{'s' if len(items)!=1 else ''} · {names}"
+            if conf:
+                detail += f" · {conf}"
+        else:
+            detail = "no items parsed"
+        items_out = [
+            {
+                "raw": i.get("raw_text", "?"),
+                "canonical": i.get("canonical_name", "?"),
+                "category": i.get("category", "UNKNOWN"),
+                "quantity": i.get("quantity"),
+                "unit": i.get("unit", ""),
+                "confidence": i.get("confidence", "?"),
+                "catalog_match": i.get("matched_catalog_item") or "UNKNOWN",
+                "errors": ", ".join(i.get("validation_errors") or []) or None,
+            }
+            for i in items
+        ]
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {"message": _trunc(text, 80), "model": "gpt-4o"},
+            "output": {
+                "overall_confidence": conf or "?",
+                "items": items_out or None,
+            },
+        }
+
+    if node_name == "priority":
+        focus = output.get("priority_focus") or ""
+        ph = output.get("priority_conversation_history") or []
+        filtered_inv = output.get("priority_inventory_context") or ""
+        orig_inv = s.get("inventory_context") or ""
+        orig_hist = len(s.get("conversation_history") or [])
+        detail = f"focus: {focus}" if focus else f"{len(ph)} turns kept"
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {
+                "inventory_items": orig_inv.count("•"),
+                "history_turns": orig_hist,
+                "intent": s.get("pre_classified_intent", "?"),
+            },
+            "output": {
+                "focus": focus or "all items",
+                "inventory_filtered_to": filtered_inv.count("•"),
+                "history_kept": len(ph),
+            },
+        }
+
+    if node_name == "aria":
+        ar = output.get("aria_result") or {}
+        action = ar.get("action", "?")
+        items = (ar.get("data") or {}).get("items") or []
+        emotion = ar.get("user_emotion") or ""
+        message = ar.get("message") or ""
+        flags = (ar.get("data") or {}).get("flags") or []
+        new_lexicons = ar.get("new_lexicons") or []
+        personality = ar.get("personality_note") or ""
+        parts = [f"action={action}"]
+        if items:
+            parts.append(", ".join(
+                f"{i.get('item_name','?')}"
+                + (f" {i.get('quantity')} {i.get('unit','').strip()}".rstrip()
+                   if i.get("quantity") is not None else "")
+                for i in items[:2]
+            ))
+        if emotion and emotion not in ("neutral", ""):
+            parts.append(emotion)
+        # Build what ARIA saw from upstream context
+        pri_inv = s.get("priority_inventory_context") or s.get("inventory_context") or ""
+        pri_hist = s.get("priority_conversation_history") or s.get("conversation_history") or []
+        pri_focus = s.get("priority_focus") or "all"
+        ext_res = s.get("extraction_result") or {}
+        ext_items = ext_res.get("items") or []
+        ir = s.get("intent_result") or {}
+        slot_parts = []
+        if ir.get("slot_item"):
+            slot_parts.append(f"item='{ir['slot_item']}'")
+        if ir.get("slot_quantity") is not None:
+            slot_parts.append(f"qty={ir['slot_quantity']}")
+        if ir.get("slot_unit"):
+            slot_parts.append(f"unit='{ir['slot_unit']}'")
+        pending = s.get("pending_action")
+        pending_summary = None
+        if pending:
+            p_items = pending.get("items") or []
+            pending_summary = ", ".join(
+                f"{i.get('quantity')} {i.get('unit','').strip()} {i.get('item_name','')}".strip()
+                for i in p_items[:2] if i.get("item_name")
+            ) or "yes"
+        pri_inv_lines = [l.strip() for l in pri_inv.split("\n") if "•" in l][:8]
+        ext_items_out = [
+            {"raw": i.get("raw_text","?"), "canonical": i.get("canonical_name"),
+             "qty": i.get("quantity"), "unit": i.get("unit",""), "confidence": i.get("confidence","?")}
+            for i in ext_items[:4]
+        ]
+        items_out = [
+            {"name": i.get("item_name"), "quantity": i.get("quantity"),
+             "unit": i.get("unit",""), "operation": i.get("operation",""),
+             "storage_area": i.get("storage_area",""), "category": i.get("category","")}
+            for i in items
+        ]
+        return {
+            "icon": icon, "label": label, "detail": " · ".join(parts),
+            "input": {
+                "model": "gpt-4o",
+                "inventory_context_shown": pri_inv_lines or None,
+                "history_turns_shown": len(pri_hist),
+                "context_focus": pri_focus,
+                "intent": s.get("pre_classified_intent", "?"),
+                "slots": ", ".join(slot_parts) if slot_parts else "none",
+                "extracted_items": ext_items_out or None,
+                "pending_action": pending_summary or "none",
+                "is_affirmation": s.get("is_affirmation", False),
+            },
+            "output": {
+                "action": action,
+                "message": message,
+                "items": items_out or None,
+                "flags": flags or None,
+                "emotion": emotion or "neutral",
+                "new_lexicons": [lx.get("original_word","") for lx in new_lexicons if lx.get("original_word")] or None,
+                "personality_note": _trunc(personality, 150) if personality else None,
+            },
+        }
+
+    if node_name == "validate":
+        flags = output.get("extra_flags") or []
+        ar = output.get("aria_result") or {}
+        action = ar.get("action", "?")
+        items = (ar.get("data") or {}).get("items") or []
+        detail = f"flags: {', '.join(flags)}" if flags else f"clean · action={action}"
+        _flag_info = {
+            "unit_mismatch": "unit differs from stored history",
+            "suspicious_quantity": "qty > 10× previous count",
+            "storage_warning": "item unusual for this storage area",
+            "conflict": "same-day write conflict",
+            "not_relevant": "non-food item",
+        }
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {
+                "action": action,
+                "items": [{"name": i.get("item_name"), "qty": i.get("quantity"),
+                           "unit": i.get("unit",""), "category": i.get("category","")}
+                          for i in items[:4]] or None,
+            },
+            "output": {
+                "action_after": action,
+                "flags": [{"flag": f, "meaning": _flag_info.get(f, f)} for f in flags] or None,
+                "clean": not bool(flags),
+            },
+        }
+
+    if node_name == "execute":
+        updated = output.get("inventory_updated", False)
+        action = output.get("action", "?")
+        items = (output.get("data") or {}).get("items") or []
+        flags = (output.get("data") or {}).get("flags") or []
+        if updated and items:
+            names = ", ".join(
+                f"{i.get('item_name','?')} {i.get('quantity','')} {i.get('unit','')}".strip()
+                for i in items[:2] if i.get("item_name")
+            )
+            detail = f"saved · {names}" if names else "inventory updated"
+        elif action == "confirm":
+            detail = "stored · awaiting confirmation"
+        else:
+            detail = "no DB write"
+        items_written = [
+            {"name": i.get("item_name"), "qty": i.get("quantity"),
+             "unit": i.get("unit",""), "op": i.get("operation",""), "area": i.get("storage_area","")}
+            for i in items if i.get("item_name")
+        ] if updated else None
+        return {
+            "icon": icon, "label": label, "detail": detail,
+            "input": {"action": action, "items_to_process": len(items)},
+            "output": {
+                "inventory_updated": updated,
+                "pending_stored": action == "confirm" and not updated,
+                "items_written": items_written,
+                "flags": flags or None,
+            },
+        }
+
+    if node_name in ("clarify", "rejected"):
+        msg = output.get("message") or ""
+        ir = s.get("intent_result") or {}
+        return {
+            "icon": icon, "label": label, "detail": _trunc(msg, 70),
+            "input": {
+                "intent": ir.get("intent", "?"),
+                "confidence": f"{ir.get('confidence',0):.0%}",
+                "reason": node_name,
+            },
+            "output": {"message_to_worker": msg},
+        }
+
+    if node_name == "persist_memory":
+        return {"icon": icon, "label": label, "detail": "worker insights saved"}
+
+    return {"icon": icon, "label": label, "detail": ""}
+
+
+# ──────────────────────────────────────────────
 # Guard crew wrapper (used by guard_node in workflow/nodes.py)
 # ──────────────────────────────────────────────
 
@@ -807,6 +1264,7 @@ async def process_message(
     db: Session,
     storage_area: Optional[str] = None,
     location_name: Optional[str] = None,
+    messages: Optional[list] = None,
 ) -> dict:
     """
     Route a worker's voice message through the LangGraph workflow:
@@ -842,6 +1300,9 @@ async def process_message(
         "location_name": location_name or "",
         "db": db,
         "extra_flags": [],
+        # If the client sent conversation history, pre-seed it so load_context_node
+        # skips the DB query and uses the client's version instead.
+        **({"conversation_history": messages} if messages else {}),
     }
 
     try:
@@ -861,5 +1322,87 @@ async def process_message(
         "action": final_state.get("action", "none"),
         "data": final_state.get("data", {"items": [], "confirmed": False, "flags": []}),
         "inventory_updated": final_state.get("inventory_updated", False),
+        "session_id": session_id,
+    }
+
+
+async def process_message_stream(
+    text: str,
+    session_id: str,
+    worker_id: str,
+    db: Session,
+    storage_area: Optional[str] = None,
+    location_name: Optional[str] = None,
+    messages: Optional[list] = None,
+) -> AsyncGenerator[dict, None]:
+    """
+    Async generator for the SSE /stream endpoint.
+
+    Yields dicts with a "type" key:
+      {"type": "status",  "step": node_name, "phase": "start"|"done",
+       "icon": "📦", "label": "Context", "detail": "..."}
+      {"type": "chunk",   "text": "..."}          ← response text chunks
+      {"type": "done",    "message": "...", ...}   ← full result payload
+      {"type": "error",   "message": "..."}        ← on failure
+    """
+    from workflow.graph import get_graph
+
+    graph = get_graph()
+    initial_state = {
+        "text": text,
+        "session_id": session_id,
+        "worker_id": worker_id,
+        "storage_area": storage_area or "",
+        "location_name": location_name or "",
+        "db": db,
+        "extra_flags": [],
+        **({"conversation_history": messages} if messages else {}),
+    }
+
+    _TERMINAL_NODES = {"execute", "clarify", "rejected"}
+    final_result: dict = {}
+    accumulated_state: dict = {
+        "text": text,
+        "worker_id": worker_id,
+        "session_id": session_id,
+        "storage_area": storage_area or "",
+        "location_name": location_name or "",
+    }
+
+    try:
+        async for chunk in graph.astream(initial_state):
+            for node_name, output in chunk.items():
+                if node_name not in _NODE_LABELS:
+                    continue
+                # Accumulate state so downstream status events can see upstream context
+                if isinstance(output, dict):
+                    accumulated_state.update(output)
+                status = _node_status(node_name, output if isinstance(output, dict) else {}, accumulated_state)
+                if status:
+                    yield {"type": "status", "step": node_name, "phase": "done", **status}
+                if node_name in _TERMINAL_NODES:
+                    final_result = output
+
+    except Exception as exc:
+        logger.error("STREAM GRAPH FAILED  error_type=%s  error=%s", type(exc).__name__, exc, exc_info=True)
+        yield {"type": "error", "message": "The AI service failed — please try again in a moment."}
+        return
+
+    if not final_result:
+        yield {"type": "error", "message": "No response received from the AI."}
+        return
+
+    # Stream message text chunk by chunk (simulate typing)
+    message = final_result.get("message", "")
+    for i in range(0, len(message), 4):
+        yield {"type": "chunk", "text": message[i:i + 4]}
+        await asyncio.sleep(0.012)
+
+    yield {
+        "type": "done",
+        "message": message,
+        "action": final_result.get("action", "none"),
+        "data": final_result.get("data", {"items": [], "confirmed": False, "flags": []}),
+        "inventory_updated": final_result.get("inventory_updated", False),
         "session_id": session_id,
     }

@@ -11,6 +11,10 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
   const finalTextRef = useRef('')
   const onResultRef = useRef(onResult)
   const onErrorRef = useRef(onError)
+  // Tracks whether the user explicitly wants to be listening.
+  // Chrome fires onend unexpectedly (no-speech timeout, audio interference, etc.)
+  // even with continuous=true — we restart in that case instead of going silent.
+  const intentionalRef = useRef(false)
 
   useEffect(() => { onResultRef.current = onResult }, [onResult])
   useEffect(() => { onErrorRef.current = onError }, [onError])
@@ -37,6 +41,7 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
               onResultRef.current?.(text)
               finalTextRef.current = ''
               setTranscript('')
+              intentionalRef.current = false
               recognition.stop()
             }
           }, 2000)
@@ -48,8 +53,10 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
     }
 
     recognition.onerror = (event) => {
-      // no-speech is normal in continuous mode — just keep listening
+      // no-speech is normal in continuous mode — Chrome will fire onend after
+      // this, which we handle by restarting if intentionalRef is still true.
       if (event.error === 'no-speech') return
+      intentionalRef.current = false
       clearTimeout(silenceTimerRef.current)
       setIsListening(false)
       onErrorRef.current?.(event.error)
@@ -57,11 +64,17 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
 
     recognition.onend = () => {
       clearTimeout(silenceTimerRef.current)
+      if (intentionalRef.current) {
+        // Chrome ended recognition unexpectedly — restart to keep mic active
+        try { recognition.start() } catch { /* already started */ }
+        return
+      }
       setIsListening(false)
     }
 
     recognitionRef.current = recognition
     return () => {
+      intentionalRef.current = false
       clearTimeout(silenceTimerRef.current)
       recognition.abort()
     }
@@ -71,11 +84,13 @@ export function useSpeechRecognition({ onResult, onError } = {}) {
     if (!recognitionRef.current || isListening) return
     finalTextRef.current = ''
     setTranscript('')
+    intentionalRef.current = true
     recognitionRef.current.start()
     setIsListening(true)
   }, [isListening])
 
   const stopListening = useCallback(() => {
+    intentionalRef.current = false
     clearTimeout(silenceTimerRef.current)
     finalTextRef.current = ''
     recognitionRef.current?.stop()
