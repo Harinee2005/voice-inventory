@@ -49,7 +49,7 @@ UNIT_ALIASES = {
     "lbs": "lb", "pounds": "lb", "pound": "lb",
     "grams": "g", "gram": "g",
     "ounces": "oz", "ounce": "oz",
-    "l": "liters", "liter": "liters", "litre": "liters", "litres": "liters",
+    "l": "liters", "lit": "liters", "liter": "liters", "litre": "liters", "litres": "liters",
     "milliliter": "ml", "milliliters": "ml", "millilitre": "ml",
     "gallon": "gallons", "gal": "gallons",
     "pcs": "pieces", "piece": "pieces", "pc": "pieces",

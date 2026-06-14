@@ -34,7 +34,7 @@ def clear_conversation(session_id: str, db: Session = Depends(get_db)):
         ConversationMessage.session_id == session_id
     ).delete()
     db.commit()
-    clear_session_pending(session_id)
+    clear_session_pending(session_id, db)
     logger.info("CONVERSATIONS CLEARED  session=%s  deleted=%d", session_id, deleted)
     return {"message": "Conversation cleared"}
 

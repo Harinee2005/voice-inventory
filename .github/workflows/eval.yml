@@ -1,0 +1,57 @@
+name: ARIA Evals
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'backend/agents/**'
+      - 'backend/workflow/**'
+
+jobs:
+  eval:
+    name: Prompt eval (≥80% pass rate)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Run ARIA evals
+        working-directory: backend
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python -m eval.run_eval --output /tmp/eval_result.json
+
+      - name: Check pass rate (≥80%)
+        run: |
+          python - <<'EOF'
+          import json, sys
+          r = json.load(open("/tmp/eval_result.json"))
+          s = r["summary"]
+          passed, total = s["passed"], s["total"]
+          pct = (passed / total * 100) if total else 0
+          avg  = s.get("avg_score", 0)
+          print(f"Eval result: {passed}/{total} passed  ({pct:.1f}%)  avg_score={avg:.3f}")
+          if pct < 80:
+              print(f"FAIL: pass rate {pct:.1f}% is below the 80% gate")
+              sys.exit(1)
+          print("PASS")
+          EOF
+
+      - name: Upload eval results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ github.run_number }}
+          path: /tmp/eval_result.json
+          retention-days: 30

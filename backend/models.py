@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, Date, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
-from datetime import datetime, date as date_type
+from datetime import datetime, date as date_type, timedelta
 
 
 class Location(Base):
@@ -91,3 +91,36 @@ class UserLexicon(Base):
     usage_count = Column(Integer, default=1)
     first_seen = Column(DateTime, default=datetime.utcnow)
     last_seen = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class PendingAction(Base):
+    """DB-persisted pending confirmation state — survives app restarts."""
+    __tablename__ = "pending_actions"
+
+    session_id = Column(String(100), primary_key=True)
+    payload = Column(Text, nullable=False)          # JSON blob of the pending action dict
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)   # auto-cleared after 15 min of no confirm
+
+
+class RejectedItem(Base):
+    """Guard rejections logged per session — prevents ARIA re-suggesting non-food items."""
+    __tablename__ = "rejected_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(100), index=True, nullable=False)
+    item_name = Column(String(100), nullable=False)
+    reason = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class SessionSummary(Base):
+    """Compressed episodic memory — summarises old turns to avoid token bloat."""
+    __tablename__ = "session_summaries"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(100), index=True, nullable=False)
+    summary = Column(Text, nullable=False)          # 100-word digest of compressed turns
+    turn_start = Column(Integer, nullable=False)    # first conversation.id in this batch
+    turn_end = Column(Integer, nullable=False)      # last conversation.id in this batch
+    created_at = Column(DateTime, default=datetime.utcnow)

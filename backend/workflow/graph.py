@@ -44,6 +44,7 @@ from workflow.nodes import (
     route_after_guard,
     rejected_node,
     extraction_node,
+    priority_node,
     aria_node,
     validate_node,
     execute_node,
@@ -62,6 +63,7 @@ def build_graph():
     graph.add_node("guard",          guard_node)
     graph.add_node("rejected",       rejected_node)
     graph.add_node("extraction",     extraction_node)
+    graph.add_node("priority",       priority_node)
     graph.add_node("aria",           aria_node)
     graph.add_node("validate",       validate_node)
     graph.add_node("execute",        execute_node)
@@ -92,8 +94,9 @@ def build_graph():
     )
     graph.add_edge("rejected",   END)
 
-    # Extraction → ARIA → happy path
-    graph.add_edge("extraction",      "aria")
+    # Extraction → Priority (BM25 pruning) → ARIA → happy path
+    graph.add_edge("extraction",      "priority")
+    graph.add_edge("priority",        "aria")
     graph.add_edge("aria",            "validate")
     graph.add_edge("validate",        "execute")
     graph.add_edge("execute",         "persist_memory")

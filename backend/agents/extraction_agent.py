@@ -403,14 +403,19 @@ async def extract_inventory(text: str) -> dict[str, Any]:
     logger.info("EXTRACTION ──▶  text=%r  model=%s", text[:120], model)
     t0 = time.perf_counter()
     try:
-        response = await get_llm_client().chat.completions.create(
+        from utils.llm_retry import call_llm
+        response = await call_llm(
+            lambda: get_llm_client().chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": f'Inventory dictation: "{text}"'},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            ),
+            label="extraction",
             model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": f'Inventory dictation: "{text}"'},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
         )
         content = response.choices[0].message.content
         parsed = ExtractionResult.model_validate_json(content)

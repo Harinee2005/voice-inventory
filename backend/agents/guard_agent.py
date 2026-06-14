@@ -82,14 +82,19 @@ async def guard_validate(text: str) -> dict:
     logger.info("GUARD ──▶  text=%r  model=%s", text[:120], model)
     t0 = time.perf_counter()
     try:
-        response = await get_llm_client().chat.completions.create(
+        from utils.llm_retry import call_llm
+        response = await call_llm(
+            lambda: get_llm_client().chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": f'Worker message: "{text}"'},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+            ),
+            label="guard",
             model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": f'Worker message: "{text}"'},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
         )
         content = response.choices[0].message.content
         parsed = GuardResult.model_validate_json(content)

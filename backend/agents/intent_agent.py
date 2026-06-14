@@ -14,12 +14,13 @@ Key patterns:
   - Chain-of-thought via the `reasoning` field before the label
   - Closed-world assumption: exactly 9 allowed intents, no others
   - Context-aware: pending action + recent history injected for slot inheritance
-  - Confidence threshold: < 0.65 triggers clarification, not ARIA
+  - Confidence threshold: < {_CONFIDENCE_THRESHOLD} triggers clarification, not ARIA
   - Graceful fallback: any failure returns intent=unknown (never blocks)
 """
 
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -27,10 +28,17 @@ from agents.schemas import IntentResult
 from clients.llm_client import get_llm_client, get_llm_model
 from logging_config import J
 
+# Reads the same env var as INTENT_CONFIDENCE_THRESHOLD in workflow/nodes.py
+# so the threshold stays in sync across the system prompt and the routing logic.
+_CONFIDENCE_THRESHOLD = float(os.getenv("INTENT_CONFIDENCE_THRESHOLD", "0.65"))
+
 logger = logging.getLogger(__name__)
 
 
-_SYSTEM_PROMPT = """\
+# Template uses <<THRESHOLD>> instead of {threshold} so it is safe to use
+# as a plain string — the JSON few-shot examples contain { } which would
+# break an f-string by being misread as format placeholders.
+_SYSTEM_PROMPT_TEMPLATE = """\
 You are a precise intent classifier for a restaurant kitchen inventory voice assistant.
 Your ONLY job is to classify the worker's intent from their spoken message.
 Do NOT generate inventory responses. Do NOT confirm or deny actions yourself.
@@ -52,7 +60,7 @@ Do NOT generate inventory responses. Do NOT confirm or deny actions yourself.
               e.g. "yes", "ok", "go ahead", "yep", "sure", "do it", "that's right"
   deny      — worker is cancelling/saying no to a pending action
               e.g. "no", "cancel", "never mind", "stop", "don't", "wrong"
-  unknown   — cannot determine intent with confidence ≥ 0.65
+  unknown   — cannot determine intent with confidence ≥ <<THRESHOLD>>
 
 ═══ CLASSIFICATION RULES ═══
 1. PENDING ACTION FIRST: If a pending action exists, single words like "yes/ok/sure/go/
@@ -61,21 +69,28 @@ Do NOT generate inventory responses. Do NOT confirm or deny actions yourself.
    the current message inherits the prior intent. "5 kg" alone after "add chicken" → confirm.
 3. CORRECTIONS: "no I meant chicken not beef" → inherit original intent (not deny).
    Only "no/cancel/never mind" with no subject → deny.
-4. VOICE NOISE: Ignore garbled words. "add 5 kg" + background noise word → still add.
+4. VOICE NOISE: Garbled words, mishearing ("so" instead of "of", "too" instead of "to"),
+   or filler sounds should be ignored. "add 2 kg so watermelon" → still intent=add.
+   The item is still identifiable even if connectors are garbled.
 5. NUMBERS ONLY: "5 kg", "10 pieces" with a pending add/remove → intent=confirm.
 6. UNIT CORRECTIONS: "actually liters not kg" with a pending action → intent=confirm
    (user is correcting a unit, not cancelling).
 7. CLASSIFY THE VERB, NOT THE ITEM: Your job is to classify the action verb only.
-   If the message contains a clear action verb (add/remove/set/check), classify it
-   as that intent — even if the item seems non-food or invalid (e.g. "add 2 motor bikes").
+   If the message contains a clear action verb (add/remove/set/check/use/received), classify
+   it as that intent — even if the item seems non-food or invalid (e.g. "add 2 motor bikes").
    Do NOT return unknown just because the item seems wrong. Item validity is checked
    downstream by the guard. Return unknown ONLY when the action itself is unclear.
+8. ACTION VERB OVERRIDES EVERYTHING: If the current message contains an explicit action verb
+   (add, remove, set, use, received), that verb determines the intent — regardless of whether
+   a pending action exists or whether history suggests otherwise. "add 5 kilos" → intent=add,
+   not confirm, even if there is a pending action. Rules 1 and 2 apply ONLY to messages that
+   have NO action verb (e.g. "yes", "5 kg", "spring onion" alone).
 
 ═══ CONFIDENCE SCORING ═══
   1.0  — unambiguous ("add 5 kg chicken breast")
   0.85 — clear with minor voice noise ("add fife kg chicken" → five kg)
   0.70 — probable but some uncertainty
-  0.65 — threshold — set needs_clarification=true below this
+  <<THRESHOLD>> — threshold — set needs_clarification=true below this
   0.50 — genuinely ambiguous — needs_clarification=true, write clarification_question
   0.0  — cannot classify at all
 
@@ -107,6 +122,15 @@ Worker: "how much chicken do we have"
 Worker: "what's the total value of cold storage"
 → {"intent":"analytics","confidence":0.95,"reasoning":"asking for monetary total of a storage area","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":false,"clarification_question":null}
 
+Worker: "give me total inventory count"
+→ {"intent":"analytics","confidence":0.95,"reasoning":"asking for a count/summary of all inventory items","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":false,"clarification_question":null}
+
+Worker: "add 1 lit of oil"
+→ {"intent":"add","confidence":1.0,"reasoning":"explicit add verb with quantity=1, unit=lit (abbreviation for liter), item=oil","slot_item":"oil","slot_quantity":1.0,"slot_unit":"lit","needs_clarification":false,"clarification_question":null}
+
+Worker: "add 2 kg so watermelon" (voice mishearing: "so" = "of")
+→ {"intent":"add","confidence":0.90,"reasoning":"clear add verb and quantity — 'so' is a voice recognition mishearing of 'of', item=watermelon is identifiable","slot_item":"watermelon","slot_quantity":2.0,"slot_unit":"kg","needs_clarification":false,"clarification_question":null}
+
 Worker: "yes" (pending action: add 5 kg chicken)
 → {"intent":"confirm","confidence":1.0,"reasoning":"single affirmation word with pending add action","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":false,"clarification_question":null}
 
@@ -132,10 +156,14 @@ Worker: "hey good morning"
 → {"intent":"unknown","confidence":0.10,"reasoning":"greeting with no inventory intent","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":true,"clarification_question":"Good morning! What would you like to add, remove, or check?"}
 
 Worker: "um the thing from yesterday"
-→ {"intent":"unknown","confidence":0.30,"reasoning":"too vague to classify — no item, qty, or action verb","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":true,"clarification_question":"What would you like to do? For example: add, remove, or check stock?"}
+→ {"intent":"unknown","confidence":0.30,"reasoning":"too vague to classify — no item, qty, or action verb","slot_item":null,"slot_quantity":null,"slot_unit":null,"needs_clarification":true,"clarification_question":"What did you want to do with it? For example — add it, remove it, or check the quantity?"}
 
 Return ONLY raw JSON — no markdown, no code fences.\
 """
+
+
+def _build_system_prompt(threshold: float) -> str:
+    return _SYSTEM_PROMPT_TEMPLATE.replace("<<THRESHOLD>>", str(threshold))
 
 
 async def classify_intent(
@@ -182,15 +210,20 @@ async def classify_intent(
     )
     t0 = time.perf_counter()
     try:
-        response = await get_llm_client().chat.completions.create(
+        from utils.llm_retry import call_llm
+        response = await call_llm(
+            lambda: get_llm_client().chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _build_system_prompt(_CONFIDENCE_THRESHOLD)},
+                    {"role": "user",   "content": user_msg},
+                ],
+                response_format={"type": "json_object"},
+                temperature=0,
+                max_tokens=400,
+            ),
+            label="intent",
             model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user",   "content": user_msg},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-            max_tokens=400,
         )
         content = response.choices[0].message.content
         parsed = IntentResult.model_validate_json(content)

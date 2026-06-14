@@ -1,0 +1,1914 @@
+{
+  "summary": {
+    "passed": 15,
+    "total": 29,
+    "avg_score": 0.7314,
+    "total_elapsed_ms": 240288.0
+  },
+  "by_rule": {
+    "General": {
+      "passed": 3,
+      "total": 3
+    },
+    "General Rule #3": {
+      "passed": 1,
+      "total": 1
+    },
+    "General Rule #5": {
+      "passed": 1,
+      "total": 1
+    },
+    "Schema": {
+      "passed": 0,
+      "total": 1
+    },
+    "Rule 10": {
+      "passed": 0,
+      "total": 1
+    },
+    "Rule 0a": {
+      "passed": 3,
+      "total": 3
+    },
+    "Rule 0b CASE B EXCEPTION": {
+      "passed": 2,
+      "total": 3
+    },
+    "Rule 0b CASE B": {
+      "passed": 1,
+      "total": 1
+    },
+    "Rule 0b CASE A": {
+      "passed": 1,
+      "total": 1
+    },
+    "Rule 1": {
+      "passed": 0,
+      "total": 3
+    },
+    "Rule 3": {
+      "passed": 1,
+      "total": 1
+    },
+    "Rule 4": {
+      "passed": 1,
+      "total": 3
+    },
+    "Rule 7A": {
+      "passed": 0,
+      "total": 1
+    },
+    "Rule 7B": {
+      "passed": 1,
+      "total": 1
+    },
+    "Rule 9": {
+      "passed": 0,
+      "total": 1
+    },
+    "Rule 2": {
+      "passed": 0,
+      "total": 1
+    },
+    "General Rule #2 (no filler)": {
+      "passed": 0,
+      "total": 2
+    },
+    "General Rule #2 (brevity)": {
+      "passed": 0,
+      "total": 1
+    }
+  },
+  "results": [
+    {
+      "id": "simple_add",
+      "description": "Add 5 kg of tomatoes \u2192 confirm, item/qty/unit correct",
+      "rule": "General",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 2294.3,
+      "aria_message": "I'll add 5 kg of tomatoes to the inventory in the fridge.",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Vegetables",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "tomatoes",
+          "actual": "tomatoes",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].unit",
+          "passed": true,
+          "expected": "kg",
+          "actual": "kg",
+          "weight": 1
+        },
+        {
+          "name": "item[0].operation",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        },
+        {
+          "name": "item[0].price>0",
+          "passed": true,
+          "expected": ">0",
+          "actual": "2.75",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "simple_remove",
+      "description": "Remove 2 kg of beef \u2192 confirm, operation=subtract",
+      "rule": "General",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 2141.3,
+      "aria_message": "I'll remove 2 kg of beef from the inventory.",
+      "aria_action": "confirm",
+      "aria_intent": "remove",
+      "aria_items": [
+        {
+          "item_name": "beef",
+          "category": "Meat",
+          "quantity": 2.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 10.0,
+          "expiry_date": null,
+          "operation": "subtract"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "remove",
+          "actual": "remove",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "beef",
+          "actual": "beef",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "2.0",
+          "actual": "2.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].unit",
+          "passed": true,
+          "expected": "kg",
+          "actual": "kg",
+          "weight": 1
+        },
+        {
+          "name": "item[0].operation",
+          "passed": true,
+          "expected": "subtract",
+          "actual": "subtract",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "simple_set",
+      "description": "Set chicken to 8 kg \u2192 confirm, operation=set",
+      "rule": "General",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 2140.5,
+      "aria_message": "Setting 8 kg of chicken in the inventory for the New York Fridge.",
+      "aria_action": "confirm",
+      "aria_intent": "set",
+      "aria_items": [
+        {
+          "item_name": "chicken",
+          "category": "Meat",
+          "quantity": 8.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 14.0,
+          "expiry_date": null,
+          "operation": "set"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "set",
+          "actual": "set",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "chicken",
+          "actual": "chicken",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "8.0",
+          "actual": "8.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].unit",
+          "passed": true,
+          "expected": "kg",
+          "actual": "kg",
+          "weight": 1
+        },
+        {
+          "name": "item[0].operation",
+          "passed": true,
+          "expected": "set",
+          "actual": "set",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "affirmation_execute",
+      "description": "\u26a1 AFFIRMATION DETECTED with pending \u2192 action=update, confirmed=True",
+      "rule": "General Rule #3",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 2135.1,
+      "aria_message": "Adding 5 kg of tomatoes to the Fridge now.",
+      "aria_action": "update",
+      "aria_intent": "confirm",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Vegetables",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "update",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 2
+        },
+        {
+          "name": "confirmed",
+          "passed": true,
+          "expected": "True",
+          "actual": "True",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "multi_item_add",
+      "description": "Two items in one command \u2192 both appear in items[]",
+      "rule": "General Rule #5",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 3326.8,
+      "aria_message": "Adding 5 kg of tomatoes and 3 litres of milk to the fridge. Does that sound good?",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Vegetables",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        },
+        {
+          "item_name": "milk",
+          "category": "Dairy",
+          "quantity": 3.0,
+          "unit": "litre",
+          "storage_area": "Fridge",
+          "unit_price": 1.5,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "tomatoes",
+          "actual": "tomatoes",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[1].name",
+          "passed": true,
+          "expected": "milk",
+          "actual": "milk",
+          "weight": 2
+        },
+        {
+          "name": "item[1].quantity",
+          "passed": true,
+          "expected": "3.0",
+          "actual": "3.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "item[1].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "2",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "expiry_date_captured",
+      "description": "Add 5 kg salmon expires 2027-06-13 \u2192 item.expiry_date populated",
+      "rule": "Schema",
+      "passed": false,
+      "score": 0.7857,
+      "elapsed_ms": 2543.8,
+      "aria_message": "I'll add 5 kg of salmon to the New York Freezer, with an expiry date of 2027-06-13.",
+      "aria_action": "update",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "salmon",
+          "category": "Seafood",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Freezer",
+          "unit_price": 14.0,
+          "expiry_date": "2027-06-13",
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "salmon",
+          "actual": "salmon",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Freezer",
+          "actual": "Freezer",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "unit_price_always_positive",
+      "description": "Items must always carry unit_price > 0",
+      "rule": "Rule 10",
+      "passed": false,
+      "score": 0.6667,
+      "elapsed_ms": 2458.1,
+      "aria_message": "I'll add 2 kg of salmon to the freezer.",
+      "aria_action": "update",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "salmon",
+          "category": "Seafood",
+          "quantity": 2.0,
+          "unit": "kg",
+          "storage_area": "Freezer",
+          "unit_price": 14.0,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Freezer",
+          "actual": "Freezer",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        },
+        {
+          "name": "item[0].price>0",
+          "passed": true,
+          "expected": ">0",
+          "actual": "14.0",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "denial_cancel",
+      "description": "'No, cancel that' with pending \u2192 action=none, intent=deny",
+      "rule": "Rule 0a",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 1454.7,
+      "aria_message": "Action cancelled as requested.",
+      "aria_action": "none",
+      "aria_intent": "deny",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "none",
+          "actual": "none",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "deny",
+          "actual": "deny",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "correction_not_denial",
+      "description": "'no I meant 3 kg not 5 kg' \u2192 confirm 3 kg, NOT deny",
+      "rule": "Rule 0a",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 3002.8,
+      "aria_message": "Got it, I'll update the quantity to 3 kg of tomatoes in the Fridge.",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Vegetables",
+          "quantity": 3.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "3.0",
+          "actual": "3.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "unit_affirmation_not_denial",
+      "description": "'no liters is fine' (unit confirmation) \u2192 should NOT deny",
+      "rule": "Rule 0a",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 3866.8,
+      "aria_message": "Got it, I'll add 3 litres of olive oil to the inventory.",
+      "aria_action": "update",
+      "aria_intent": "confirm",
+      "aria_items": [
+        {
+          "item_name": "olive oil",
+          "category": "Dry Goods",
+          "quantity": 3.0,
+          "unit": "litre",
+          "storage_area": "Fridge",
+          "unit_price": 3.0,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "update",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 2
+        },
+        {
+          "name": "confirmed",
+          "passed": true,
+          "expected": "True",
+          "actual": "True",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "fragment_qty_no_context",
+      "description": "'5 kg' with no conversation history \u2192 clarify (EXCEPTION)",
+      "rule": "Rule 0b CASE B EXCEPTION",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 10648.6,
+      "aria_message": "5 kg of what? Could you please specify the item?",
+      "aria_action": "clarify",
+      "aria_intent": "add",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "clarify",
+          "actual": "clarify",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "2",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "fragment_qty_with_active_item",
+      "description": "'5 kg' after worker said 'add tomatoes' \u2192 inherit \u2192 confirm (CASE B)",
+      "rule": "Rule 0b CASE B",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 16601.7,
+      "aria_message": "I'll add 5 kg of tomatoes to the inventory.",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Produce",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "tomatoes",
+          "actual": "tomatoes",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].unit",
+          "passed": true,
+          "expected": "kg",
+          "actual": "kg",
+          "weight": 1
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "fragment_item_after_qty_turn",
+      "description": "'tomatoes' after user said '5 kg' \u2192 combine \u2192 5 kg tomatoes (CASE A)",
+      "rule": "Rule 0b CASE A",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 14746.7,
+      "aria_message": "I'll add 5 kg of tomatoes to the inventory.",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Produce",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "tomatoes",
+          "actual": "tomatoes",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].unit",
+          "passed": true,
+          "expected": "kg",
+          "actual": "kg",
+          "weight": 1
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "fragment_qty_after_cancelled_turn",
+      "description": "'5 kg' where only prior item was DENIED \u2192 clarify (EXCEPTION)",
+      "rule": "Rule 0b CASE B EXCEPTION",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 7067.7,
+      "aria_message": "5 kg of what?",
+      "aria_action": "clarify",
+      "aria_intent": "add",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "clarify",
+          "actual": "clarify",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "fragment_qty_after_query_answer",
+      "description": "'5 kg' after ARIA listed items in a query answer \u2192 clarify (EXCEPTION)",
+      "rule": "Rule 0b CASE B EXCEPTION",
+      "passed": false,
+      "score": 0.3333,
+      "elapsed_ms": 16641.0,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26488, Requested 3896. Please try again in 768ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "clarify",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "unit_auto_correct_solid_in_litres",
+      "description": "'5 litres of chicken' \u2192 auto-correct to kg, action=update, unit_changed flag",
+      "rule": "Rule 1",
+      "passed": false,
+      "score": 0.1538,
+      "elapsed_ms": 16634.7,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26334, Requested 3901. Please try again in 469ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "update",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": false,
+          "expected": "add",
+          "actual": "ERROR",
+          "weight": 2
+        },
+        {
+          "name": "item[0]_exists",
+          "passed": false,
+          "expected": "item[0] present",
+          "actual": "missing",
+          "weight": 2
+        },
+        {
+          "name": "confirmed",
+          "passed": false,
+          "expected": "True",
+          "actual": "False",
+          "weight": 2
+        },
+        {
+          "name": "flag_present:unit_changed",
+          "passed": false,
+          "expected": "True",
+          "actual": "False",
+          "weight": 1
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "unit_auto_correct_liquid_in_kg",
+      "description": "'5 kg of milk' (liquid) \u2192 auto-correct to litre, action=update",
+      "rule": "Rule 1",
+      "passed": false,
+      "score": 0.1538,
+      "elapsed_ms": 16482.3,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26165, Requested 3897. Please try again in 124ms. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "update",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": false,
+          "expected": "add",
+          "actual": "ERROR",
+          "weight": 2
+        },
+        {
+          "name": "item[0]_exists",
+          "passed": false,
+          "expected": "item[0] present",
+          "actual": "missing",
+          "weight": 2
+        },
+        {
+          "name": "confirmed",
+          "passed": false,
+          "expected": "True",
+          "actual": "False",
+          "weight": 2
+        },
+        {
+          "name": "flag_present:unit_changed",
+          "passed": false,
+          "expected": "True",
+          "actual": "False",
+          "weight": 1
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "unit_compatible_grams_to_kg",
+      "description": "'500 g of sugar' (same group: g \u2194 kg) \u2192 confirm, NOT auto-execute",
+      "rule": "Rule 1",
+      "passed": false,
+      "score": 0.7,
+      "elapsed_ms": 2203.3,
+      "aria_message": "I'll add 500 g of sugar to the inventory in Dry Storage.",
+      "aria_action": "update",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "sugar",
+          "category": "Dry Goods",
+          "quantity": 500.0,
+          "unit": "g",
+          "storage_area": "Dry Storage",
+          "unit_price": 0.5,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Dry Storage",
+          "actual": "Dry Storage",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "storage_area_locked_to_workspace",
+      "description": "Worker says 'put in freezer' but workspace=Fridge \u2192 item.storage_area=Fridge",
+      "rule": "Rule 3",
+      "passed": true,
+      "score": 0.9286,
+      "elapsed_ms": 2073.4,
+      "aria_message": "\u26a0 Tomatoes are typically stored in the Fridge, not the freezer. I'll log 2 kg of tomatoes in the Fridge instead. Is that okay?",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "tomatoes",
+          "category": "Vegetables",
+          "quantity": 2.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 2.75,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [
+        "storage_warning"
+      ],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "tomatoes",
+          "actual": "tomatoes",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "2.0",
+          "actual": "2.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_area",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "storage_mismatch_beef_in_dry",
+      "description": "Raw beef in Dry Storage \u2192 still confirm, but \u26a0 in message",
+      "rule": "Rule 4",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 1733.9,
+      "aria_message": "\u26a0 Beef is typically stored in Cold Storage, not Dry Storage. Sure you want to log it here?",
+      "aria_action": "confirm",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "beef",
+          "category": "Meat",
+          "quantity": 5.0,
+          "unit": "kg",
+          "storage_area": "Dry Storage",
+          "unit_price": 14.0,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [
+        "storage_warning"
+      ],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "confirm",
+          "actual": "confirm",
+          "weight": 3
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "beef",
+          "actual": "beef",
+          "weight": 2
+        },
+        {
+          "name": "item[0].quantity",
+          "passed": true,
+          "expected": "5.0",
+          "actual": "5.0",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Dry Storage",
+          "actual": "Dry Storage",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22644",
+          "actual": "2",
+          "weight": 1
+        },
+        {
+          "name": "msg_contains:\u26a0",
+          "passed": true,
+          "expected": "\u26a0",
+          "actual": "\u26a0 Beef is typically stored in Cold Storage, not Dry Storage. Sure you want to lo",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "storage_mismatch_milk_in_freezer",
+      "description": "Milk in Freezer \u2192 warn (dairy \u2192 Fridge, not Freezer)",
+      "rule": "Rule 4",
+      "passed": false,
+      "score": 0.3333,
+      "elapsed_ms": 16578.2,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 27121, Requested 3900. Please try again in 2.042s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "item[0]_exists",
+          "passed": false,
+          "expected": "item[0] present",
+          "actual": "missing",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22644",
+          "actual": "3",
+          "weight": 1
+        },
+        {
+          "name": "msg_contains:\u26a0",
+          "passed": false,
+          "expected": "\u26a0",
+          "actual": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organi",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "no_false_storage_warning_tomatoes_fridge",
+      "description": "Tomatoes in Fridge is fine \u2192 no \u26a0 warning",
+      "rule": "Rule 4",
+      "passed": false,
+      "score": 0.4286,
+      "elapsed_ms": 16631.0,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 27093, Requested 3901. Please try again in 1.988s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        },
+        {
+          "name": "msg_not:\u26a0",
+          "passed": true,
+          "expected": "NOT \u26a0",
+          "actual": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organi",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "total_value_unscoped_uses_workspace",
+      "description": "Unscoped 'total value' \u2192 workspace total figure (Rule 7A)",
+      "rule": "Rule 7A",
+      "passed": false,
+      "score": 0.3,
+      "elapsed_ms": 16534.4,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26977, Requested 3890. Please try again in 1.734s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "query_result",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": false,
+          "expected": "analytics",
+          "actual": "ERROR",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        },
+        {
+          "name": "msg_contains:$",
+          "passed": false,
+          "expected": "$",
+          "actual": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organi",
+          "weight": 1
+        },
+        {
+          "name": "msg_contains:97",
+          "passed": true,
+          "expected": "97",
+          "actual": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organi",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "total_value_grand_total_all_locations",
+      "description": "'grand total across all locations' \u2192 uses all-locations figure (Rule 7B)",
+      "rule": "Rule 7B",
+      "passed": true,
+      "score": 1.0,
+      "elapsed_ms": 3284.1,
+      "aria_message": "The grand total across all our locations is $97.00.",
+      "aria_action": "query_result",
+      "aria_intent": "analytics",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": true,
+          "expected": "query_result",
+          "actual": "query_result",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "analytics",
+          "actual": "analytics",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        },
+        {
+          "name": "msg_contains:$",
+          "passed": true,
+          "expected": "$",
+          "actual": "The grand total across all our locations is $97.00.",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "item_name_not_paraphrased",
+      "description": "'chicken breast' stays 'chicken breast', never renamed to 'poultry'",
+      "rule": "Rule 9",
+      "passed": false,
+      "score": 0.7,
+      "elapsed_ms": 3667.0,
+      "aria_message": "Adding 3 kg of chicken breast to the Fridge.",
+      "aria_action": "update",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "chicken breast",
+          "category": "Meat",
+          "quantity": 3.0,
+          "unit": "kg",
+          "storage_area": "Fridge",
+          "unit_price": 14.0,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "item[0].name",
+          "passed": true,
+          "expected": "chicken breast",
+          "actual": "chicken breast",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Fridge",
+          "actual": "Fridge",
+          "weight": 2
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "voice_unit_lit_is_valid",
+      "description": "'1 lit of olive oil' \u2192 treated as litre, no unit_mismatch flag",
+      "rule": "Rule 2",
+      "passed": false,
+      "score": 0.7273,
+      "elapsed_ms": 3693.2,
+      "aria_message": "I'll add 1 litre of olive oil to the inventory in Dry Storage.",
+      "aria_action": "update",
+      "aria_intent": "add",
+      "aria_items": [
+        {
+          "item_name": "olive oil",
+          "category": "Dry Goods",
+          "quantity": 1.0,
+          "unit": "litre",
+          "storage_area": "Dry Storage",
+          "unit_price": 3.0,
+          "expiry_date": null,
+          "operation": "add"
+        }
+      ],
+      "aria_flags": [],
+      "aria_confirmed": true,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "update",
+          "weight": 3
+        },
+        {
+          "name": "intent",
+          "passed": true,
+          "expected": "add",
+          "actual": "add",
+          "weight": 2
+        },
+        {
+          "name": "item[0].storage_locked",
+          "passed": true,
+          "expected": "Dry Storage",
+          "actual": "Dry Storage",
+          "weight": 2
+        },
+        {
+          "name": "flag_absent:unit_mismatch",
+          "passed": true,
+          "expected": "False",
+          "actual": "False",
+          "weight": 1
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": true,
+          "expected": "\u22642",
+          "actual": "1",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "no_filler_on_confirm",
+      "description": "Simple confirm must not end with filler like 'Let me know if\u2026'",
+      "rule": "General Rule #2 (no filler)",
+      "passed": false,
+      "score": 0.3333,
+      "elapsed_ms": 16657.8,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26990, Requested 3904. Please try again in 1.788s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "response_max_two_sentences",
+      "description": "Simple add must produce \u22642 sentences",
+      "rule": "General Rule #2 (brevity)",
+      "passed": false,
+      "score": 0.3333,
+      "elapsed_ms": 16529.3,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26915, Requested 3902. Please try again in 1.634s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "confirm",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    },
+    {
+      "id": "no_filler_on_query_result",
+      "description": "Query answer must not end with filler",
+      "rule": "General Rule #2 (no filler)",
+      "passed": false,
+      "score": 0.3333,
+      "elapsed_ms": 16515.4,
+      "aria_message": "Error code: 429 - {'error': {'message': 'Rate limit reached for gpt-4o in organization org-9i7XEMSGal5EogDs3bqsWLzf on tokens per min (TPM): Limit 30000, Used 26790, Requested 3893. Please try again in 1.366s. Visit https://platform.openai.com/account/rate-limits to learn more.', 'type': 'tokens', 'param': None, 'code': 'rate_limit_exceeded'}}",
+      "aria_action": "ERROR",
+      "aria_intent": "ERROR",
+      "aria_items": [],
+      "aria_flags": [],
+      "aria_confirmed": false,
+      "checks": [
+        {
+          "name": "action",
+          "passed": false,
+          "expected": "query_result",
+          "actual": "ERROR",
+          "weight": 3
+        },
+        {
+          "name": "no_filler",
+          "passed": true,
+          "expected": "no filler",
+          "actual": "clean",
+          "weight": 2
+        },
+        {
+          "name": "max_sentences",
+          "passed": false,
+          "expected": "\u22642",
+          "actual": "3",
+          "weight": 1
+        }
+      ]
+    }
+  ]
+}

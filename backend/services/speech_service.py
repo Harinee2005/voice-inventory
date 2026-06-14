@@ -5,6 +5,8 @@ import time
 
 from openai import AsyncOpenAI
 
+from utils.llm_retry import call_llm
+
 logger = logging.getLogger(__name__)
 
 _client: AsyncOpenAI | None = None
@@ -26,10 +28,16 @@ async def transcribe_audio(audio_bytes: bytes, filename: str = "audio.webm") -> 
 
     try:
         with open(tmp_path, "rb") as f:
-            transcript = await _get_client().audio.transcriptions.create(
+            file_bytes = f.read()
+
+        transcript = await call_llm(
+            lambda: _get_client().audio.transcriptions.create(
                 model="whisper-1",
-                file=(filename, f, "audio/webm"),
-            )
+                file=(filename, file_bytes, "audio/webm"),
+            ),
+            label="tts",
+            model="whisper-1",
+        )
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info("TRANSCRIBE ◀──  elapsed=%.0fms  transcript=%r", elapsed, transcript.text[:200])
         return transcript.text
@@ -44,11 +52,15 @@ async def synthesize_speech(text: str) -> bytes:
     logger.info("TTS ──▶  text_len=%d  text=%r", len(text), text[:100])
     t0 = time.perf_counter()
     try:
-        response = await _get_client().audio.speech.create(
+        response = await call_llm(
+            lambda: _get_client().audio.speech.create(
+                model="tts-1",
+                voice="nova",
+                input=text,
+                response_format="mp3",
+            ),
+            label="tts",
             model="tts-1",
-            voice="nova",
-            input=text,
-            response_format="mp3",
         )
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info("TTS ◀──  elapsed=%.0fms  output_bytes=%d", elapsed, len(response.content))

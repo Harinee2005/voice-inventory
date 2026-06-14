@@ -27,7 +27,9 @@ class WorkflowState(TypedDict, total=False):
     inventory_context: str
     item_history_context: str
     conversation_history: List[Dict]
-    pending_action: Optional[Dict]  # from in-process _pending_actions store
+    pending_action: Optional[Dict]  # DB-persisted pending confirmation state
+    rejection_context: str          # items guard rejected this session
+    session_digest: str             # compressed episodic summary of older turns
 
     # load_memory_node writes these
     user_memories: List[Dict]       # raw Mem0 records
@@ -59,6 +61,13 @@ class WorkflowState(TypedDict, total=False):
 
     # ── Execution ─────────────────────────────────────────────────────────────
     inventory_updated: bool
+
+    # ── Priority agent output (context pruning — sits between extraction and aria)
+    priority_inventory_context: str
+    priority_item_history_context: str
+    priority_conversation_history: List[Dict]
+    priority_profile_context: str
+    priority_focus: str              # human-readable label: what the agent is focused on
 
     # ── Final response ────────────────────────────────────────────────────────
     message: str

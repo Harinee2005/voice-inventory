@@ -76,6 +76,7 @@ class VoiceProcessRequest(BaseModel):
     worker_id: str = "worker"
     storage_area: Optional[str] = None
     location_name: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None  # client-provided conversation history
 
 
 class VoiceProcessResponse(BaseModel):

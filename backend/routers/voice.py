@@ -1,14 +1,16 @@
+import asyncio
 import base64
+import json
 import logging
 import time
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
 from schemas import VoiceProcessRequest, VoiceProcessResponse
-from services.ai_service import process_message
+from services.ai_service import process_message, process_message_stream
 from services.speech_service import transcribe_audio, synthesize_speech
 
 router = APIRouter(prefix="/api/voice", tags=["voice"])
@@ -43,6 +45,7 @@ async def process_voice_text(request: VoiceProcessRequest, db: Session = Depends
         storage_area=request.storage_area,
         location_name=request.location_name,
         db=db,
+        messages=request.messages,
     )
     result = await _attach_audio(result)
     logger.info(
@@ -51,6 +54,46 @@ async def process_voice_text(request: VoiceProcessRequest, db: Session = Depends
         (time.perf_counter() - t0) * 1000,
     )
     return VoiceProcessResponse(**result)
+
+
+@router.post("/stream")
+async def stream_voice_text(request: VoiceProcessRequest):
+    """SSE endpoint — emits status/chunk/done events as the graph executes.
+
+    DB session is owned by the generator (not FastAPI's DI) so it stays
+    alive for the full duration of the stream, not just the route handler.
+    """
+    logger.info(
+        "VOICE /stream  worker=%s  session=%s  text=%r",
+        request.worker_id, request.session_id, request.text[:120],
+    )
+
+    async def event_generator():
+        from database import SessionLocal
+        db = SessionLocal()
+        try:
+            async for evt in process_message_stream(
+                text=request.text,
+                session_id=request.session_id,
+                worker_id=request.worker_id,
+                storage_area=request.storage_area,
+                location_name=request.location_name,
+                db=db,
+                messages=request.messages,
+            ):
+                event_type = evt.pop("type", "status")
+                yield f"event: {event_type}\ndata: {json.dumps(evt)}\n\n"
+        finally:
+            db.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post("/transcribe")

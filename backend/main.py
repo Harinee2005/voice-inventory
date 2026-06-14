@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy import text, inspect
 
 from logging_config import setup_logging, J, new_trace, separator
-from database import engine, Base, SessionLocal
+from database import engine, Base, SessionLocal, create_views
 from routers import inventory, voice, analytics, conversations, locations, users
 from routers import chat as chat_router
 
@@ -80,6 +80,13 @@ def _run_migrations():
                     logger.info("MIGRATION  added column user_profiles.%s (%s)", col, definition)
             conn.commit()
 
+    # Create new tables if they don't exist yet (idempotent — SQLAlchemy skips existing tables)
+    from models import PendingAction, RejectedItem, SessionSummary
+    for model in (PendingAction, RejectedItem, SessionSummary):
+        if model.__tablename__ not in existing_tables:
+            model.__table__.create(bind=engine, checkfirst=True)
+            logger.info("MIGRATION  created table %s", model.__tablename__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -87,6 +94,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     logger.info("DB TABLES CREATED/VERIFIED")
     _run_migrations()
+    create_views()
     routes = [f"{list(r.methods)} {r.path}" for r in app.routes if hasattr(r, "methods")]
     logger.info("ROUTES REGISTERED  count=%d  %s", len(routes), routes)
     yield
@@ -108,6 +116,8 @@ async def log_requests(request: Request, call_next):
     tid = new_trace()
     t0 = time.perf_counter()
 
+    # Read body for logging. Starlette's _CachedRequest caches it automatically;
+    # call_next's wrapped_receive returns the cached copy to the route handler.
     body_bytes = await request.body()
     body_preview = ""
     if body_bytes:
@@ -126,11 +136,6 @@ async def log_requests(request: Request, call_next):
         getattr(request.client, "host", "?"),
         body_preview or "(empty)",
     )
-
-    async def receive():
-        return {"type": "http.request", "body": body_bytes, "more_body": False}
-
-    request._receive = receive  # type: ignore[attr-defined]
 
     response = await call_next(request)
     elapsed_ms = (time.perf_counter() - t0) * 1000
