@@ -12,6 +12,7 @@ import time
 from agents.schemas import ARIAResult
 from clients.llm_client import get_llm_client, get_llm_model
 from logging_config import J
+from utils.llm_retry import call_llm
 
 logger = logging.getLogger(__name__)
 
@@ -50,9 +51,15 @@ CASE A — Previous turn had qty+unit, current turn is item name only:
 
 CASE B — Current message has qty+unit but NO food item name:
   Examples: "1 kg", "5 packets", "add 1 kg"
-  → Find the most recently mentioned food item in the last 1-5 turns.
+  → Find the most recently mentioned food item in the last 1-5 turns WHERE the worker
+    intended to ADD/SET/REMOVE it (active mutative context).
   → Apply qty+unit to that item → action="confirm"
-  → NEVER say "incomplete" or "what item?". The item is always in history.
+  → NEVER say "incomplete" or "what item?" when a valid recent item exists.
+
+  EXCEPTION — if the only recent item mentions were in a DENIED/CANCELLED turn ("no,
+  cancel that") or only appeared inside ARIA's own query answer (not said by the worker),
+  those do NOT count as "in history." In that case, ask once in the shortest possible
+  form: "5 kg of what?" — action="clarify". Never ask more than once.
 
 CASE B2 — Current message is ONLY a unit (no qty, no item):
   → Find BOTH the quantity AND the food item from the last 1-5 turns.
@@ -97,6 +104,7 @@ Step 3 — Respond immediately WITHOUT asking, and execute directly:
 
 If units are compatible within the same group (kg ↔ g, liters ↔ ml):
   → Acknowledge the conversion and go to action="confirm" directly.
+  → Do NOT use action="update" here — this still requires the worker to say yes.
 
 If the item has no history and the unit is physically compatible → proceed normally.
 
@@ -105,6 +113,10 @@ If the item has no history and the unit is physically compatible → proceed nor
 ═══════════════════════════════════════════════
 TRIGGER: ONLY apply this rule when the "Fuzzy Unit Detection" section explicitly names
 a typo and its correction. If it says "No fuzzy units detected" — skip this rule entirely.
+
+COMMON ABBREVIATIONS (always valid — never flag or question these):
+  "lit" / "lts" → liters, "kilo" → kg, "pc" → pieces, "ml" → ml
+  If the worker says "1 lit of oil", treat it as 1 litre — do NOT say it's an invalid unit.
 
 EXCEPTION — Voice mishearings in unit position:
   "letters" → liters, "leaders" → liters, "grems" → grams, "pesos" → pieces
@@ -158,11 +170,12 @@ If the User Profile lists known lexicons, apply them immediately without asking.
 The inventory context contains a "## Pre-computed workspace summary" with an exact
 server-calculated total. This number is computed in Python and is ALWAYS correct.
 
-A) Workspace total query → Use ONLY the pre-computed workspace total. Say: "The total value
-   for [workspace label] is $X.XX." Do NOT sum across all locations.
+A) Workspace total query — includes unscoped "total value" / "total inventory" / "how much
+   is everything worth" with no location keyword → Use ONLY the pre-computed workspace
+   total. Say: "The total value for [workspace label] is $X.XX." Do NOT sum across all locations.
 
-B) All-locations query ("grand total", "all locations", "everything") → Use the
-   [Grand total across ALL locations: $X.XX] figure. Do NOT recompute.
+B) All-locations query ("grand total", "all locations", "everything", "across all sites") →
+   Use the [Grand total across ALL locations: $X.XX] figure. Do NOT recompute.
 
 C) Specific area query → Sum only the items for that named area from the line items.
 
@@ -173,8 +186,13 @@ NEVER mix up workspace total with all-locations total.
 ═══════════════════════════════════════════════
 NEVER invent a quantity. Use ONLY quantities that appear in:
   1. The worker's current message, OR
-  2. The last 3 conversation turns (slot inheritance)
-If you cannot find a quantity, set quantity=null and action="clarify".
+  2. The last 3 conversation turns — BUT ONLY if that quantity was stated for the
+     SAME item (or the item being corrected to). If the only recent quantity in
+     history belongs to a DIFFERENT item (e.g., a prior add/confirm for rocket
+     while the worker is now talking about tamarind), do NOT carry it over.
+     Set quantity=null and action="clarify" and ask for the quantity explicitly.
+If you cannot find a quantity that clearly belongs to the current item,
+set quantity=null and action="clarify".
 If the pre-classified intent extracted a slot_quantity, use that exact value.
 
 ═══════════════════════════════════════════════
@@ -185,7 +203,34 @@ Never paraphrase, rename, or substitute. "chicken breast" stays "chicken breast"
 If the pre-classified intent extracted a slot_item, use that exact name.
 
 ═══════════════════════════════════════════════
-## RULE 10 — PRICE CONSTRAINTS (US wholesale per unit)
+## RULE 10 — TRUST THE WORKER'S UNITS (ABSOLUTE)
+═══════════════════════════════════════════════
+The worker chooses how they count their own inventory. Never question, correct, or
+lecture about their unit choice. "24 cases of Coke" → use cases. "6 dozen eggs" → use
+dozen. "3 boxes of pasta" → use boxes.
+
+ONLY override units when RULE 1 applies: a physical impossibility (a solid measured in
+liters, a liquid measured in kg). Cans vs. cases, boxes vs. packets, bags vs. sacks —
+all valid business choices. Accept them without comment.
+
+Do NOT say things like "Coke is typically measured in cans, not cases" — this is a
+correction the worker did not ask for. Trust them.
+
+═══════════════════════════════════════════════
+## RULE 11 — CONFIRM MESSAGES MUST STATE FULL ITEM DETAILS (ABSOLUTE)
+═══════════════════════════════════════════════
+Whenever action="confirm" or action="clarify" and items is non-empty, your
+message MUST explicitly state the quantity, unit, AND item name in the form:
+  "{qty} {unit} of {name}"
+Example: "Got it — adding 6 kg of tamarind to Fridge. Confirm?"
+NEVER say "Let's proceed", "Got it", or "I'll add that" without naming WHAT
+is being confirmed. This applies to item corrections too:
+  "You meant tamarind — so that's 6 kg of tamarind to Fridge. Is that right?"
+A confirm message with no explicit quantity is forbidden. If quantity=null,
+use action="clarify" and ask the worker for a quantity instead.
+
+═══════════════════════════════════════════════
+## RULE 12 — PRICE CONSTRAINTS (US wholesale per unit)
 ═══════════════════════════════════════════════
 Estimate unit_price from typical US wholesale ranges:
   • Meat/Seafood:  $3–$25/kg    • Dairy:       $1–$8/unit
@@ -197,8 +242,15 @@ Never set unit_price=0 — minimum is $0.10.
 ═══════════════════════════════════════════════
 ## GENERAL RULES
 ═══════════════════════════════════════════════
-1. ALWAYS confirm before updating — never blindly execute
-2. Keep responses SHORT: 1–2 sentences
+1. ALWAYS confirm before updating — never blindly execute.
+   action="update" (committed write) is ONLY valid in exactly three scenarios:
+     (a) ⚡ AFFIRMATION DETECTED appears in the Pending Action context (worker said yes).
+     (b) RULE 1 auto-correction applies: unit is physically incompatible → correct & execute.
+     (c) Pre-classified intent is "confirm" or "deny" (worker is resolving a pending action).
+   For ALL other messages — including crystal-clear "add 5 kg chicken" commands — use
+   action="confirm" and let the worker explicitly say yes before anything is written.
+2. Keep responses SHORT: 1–2 sentences. Never append filler like "Let me know if there's
+   anything else you need!" — it becomes repetitive. End on the confirmation or action itself.
 3. When ⚡ AFFIRMATION DETECTED is in the pending context → execute immediately (action="update", confirmed=true)
 4. URGENCY/DISCOMFORT with a pending action and no new item specified → treat as implicit yes → execute
 5. MULTI-ITEM: capture ALL items in the items array
@@ -257,10 +309,14 @@ def _build_user_message(
     pre_classified_intent: str = "",
     intent_slots: str = "",
     extraction_context: str = "",
+    session_digest: str = "",
+    rejection_context: str = "",
 ) -> str:
     intent_section = pre_classified_intent if pre_classified_intent else "unknown — classify from context"
     slots_line = f"\nExtracted slots: {intent_slots}" if intent_slots else ""
     extraction_section = extraction_context or "No structured extraction available for this message."
+    digest_section = f"\n## Session Summary (earlier in this shift)\n{session_digest}\n" if session_digest else ""
+    rejection_section = f"\n{rejection_context}\n" if rejection_context else ""
     return f"""\
 Worker: {worker_id}
 Today: {today}
@@ -278,8 +334,7 @@ Worker said: "{text}"
 
 ## Known Item Unit History (most recent unit per item across ALL sessions)
 {item_history_context}
-
-## Recent Conversation History
+{digest_section}{rejection_section}## Recent Conversation History
 {conversation_history_json}
 
 ## Active Workspace (FIXED — do not change these values)
@@ -310,6 +365,8 @@ async def aria_process(
     pre_classified_intent: str = "",
     intent_slots: str = "",
     extraction_context: str = "",
+    session_digest: str = "",
+    rejection_context: str = "",
 ) -> dict:
     """
     Process a worker's message through ARIA and return a dict matching ARIAResult schema.
@@ -333,6 +390,8 @@ async def aria_process(
         pre_classified_intent=pre_classified_intent,
         intent_slots=intent_slots,
         extraction_context=extraction_context,
+        session_digest=session_digest,
+        rejection_context=rejection_context,
     )
     logger.info(
         "ARIA ──▶  worker=%s  intent=%s  slots=%r  fuzzy=%r  model=%s  "
@@ -344,17 +403,24 @@ async def aria_process(
     logger.debug("ARIA PROMPT:\n%s", user_message[:2000])
     t0 = time.perf_counter()
     try:
-        response = await get_llm_client().chat.completions.create(
+        response = await call_llm(
+            lambda: get_llm_client().beta.chat.completions.parse(
+                model=model,
+                messages=[
+                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                response_format=ARIAResult,
+                temperature=0.2,
+            ),
+            label="aria",
             model=model,
-            messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.2,
         )
-        content = response.choices[0].message.content
-        parsed = ARIAResult.model_validate_json(content)
+        parsed = response.choices[0].message.parsed
+        if parsed is None:
+            # Refusal or unparseable — fall back to content parsing
+            content = response.choices[0].message.content or "{}"
+            parsed = ARIAResult.model_validate_json(content)
         result = parsed.model_dump()
         elapsed = (time.perf_counter() - t0) * 1000
         items = result.get("data", {}).get("items", [])

@@ -30,17 +30,32 @@ Graph topology (built in graph.py):
 import asyncio
 import json
 import logging
+import os
 import time
 from datetime import date as date_type
 
 from workflow.state import WorkflowState
+
+# Single source of truth for the intent confidence threshold.
+# Referenced in route_after_intent and injected into the intent agent system prompt.
+INTENT_CONFIDENCE_THRESHOLD = float(os.getenv("INTENT_CONFIDENCE_THRESHOLD", "0.65"))
+
+# Intent-aware fallback messages when ARIA errors out — keeps workers in conversation
+_ARIA_FALLBACK: dict[str, str] = {
+    "add":      "I couldn't process that — could you repeat what you're adding?",
+    "remove":   "I couldn't process that — what are you removing?",
+    "set":      "I couldn't process that — what quantity are you setting?",
+    "query":    "I had trouble fetching that — please ask again.",
+    "confirm":  "Something went wrong — if you still want to confirm, just say yes again.",
+    "deny":     "Got it, cancelling that.",
+    "analytics":"I had trouble with that report — please try again.",
+    "expiry":   "I couldn't check the expiry — please try again.",
+}
 from clients.mem0_client import (
     get_user_memories,
     add_user_memory,
     build_user_profile_from_memories,
 )
-from logging_config import J
-
 logger = logging.getLogger(__name__)
 
 
@@ -62,8 +77,13 @@ async def load_context_node(state: WorkflowState) -> dict:
         _build_item_history_context,
         _get_conversation_history,
         _get_or_create_user_profile,
-        _pending_actions,
+        get_pending_action,
+        load_recent_rejections,
+        _SESSION_EXPIRY_HOURS,
     )
+    from services.memory_service import load_compressed_history
+    from models import ConversationMessage
+    from datetime import datetime, timedelta
 
     db = state["db"]
     session_id = state["session_id"]
@@ -87,8 +107,54 @@ async def load_context_node(state: WorkflowState) -> dict:
         db, storage_area=storage_area, location_name=location_name
     )
     item_history_context = _build_item_history_context(db)
-    conversation_history = _get_conversation_history(session_id, db, limit=30)
-    pending_action = _pending_actions.get(session_id)
+
+    # Use client-provided history if the caller seeded it in initial_state;
+    # otherwise fall back to loading from DB (with episodic compression support).
+    client_history = state.get("conversation_history")
+    session_digest = ""
+    if client_history:
+        conversation_history = client_history
+        history_source = f"client ({len(conversation_history)} turns)"
+    else:
+        # Session expiry: check the latest message timestamp first
+        last_msg = (
+            db.query(ConversationMessage)
+            .filter(ConversationMessage.session_id == session_id)
+            .order_by(ConversationMessage.timestamp.desc())
+            .first()
+        )
+        session_expired = False
+        if last_msg and last_msg.timestamp:
+            age = datetime.utcnow() - last_msg.timestamp
+            if age > timedelta(hours=_SESSION_EXPIRY_HOURS):
+                session_expired = True
+                logger.info(
+                    "load_context  SESSION EXPIRED  session=%s  age=%.1fh  clearing history",
+                    session_id, age.total_seconds() / 3600,
+                )
+
+        if session_expired:
+            conversation_history = []
+            history_source = "db (0 turns) [EXPIRED SESSION]"
+        else:
+            # Load compressed digest + recent raw turns (episodic memory)
+            try:
+                session_digest, conversation_history = load_compressed_history(session_id, db)
+            except Exception as exc:
+                logger.warning("load_context  load_compressed_history failed, falling back: %s", exc)
+                conversation_history = _get_conversation_history(session_id, db, limit=30)
+                session_digest = ""
+            history_source = (
+                f"db ({len(conversation_history)} recent turns"
+                + (f" + {session_digest.count('[Earlier')} digest(s)" if session_digest else "")
+                + ")"
+            )
+
+    # DB-backed pending action (survives restarts, auto-expires after TTL)
+    pending_action = get_pending_action(session_id, db)
+
+    # Guard rejections — prevent ARIA from re-suggesting items rejected this session
+    rejection_context = load_recent_rejections(session_id, db)
 
     # Count inventory lines for the log
     inv_item_count = inventory_context.count("•")
@@ -96,19 +162,19 @@ async def load_context_node(state: WorkflowState) -> dict:
 
     logger.info(
         "NODE ◀── load_context  inventory_items=%d  history_items=%d  "
-        "conv_turns=%d  pending_action=%s  elapsed=%.0fms",
+        "conv_history=%s  pending_action=%s  rejections=%s  digest=%s  elapsed=%.0fms",
         inv_item_count, hist_item_count,
-        len(conversation_history), bool(pending_action),
+        history_source, bool(pending_action), bool(rejection_context), bool(session_digest),
         (time.perf_counter() - t0) * 1000,
     )
-    if pending_action:
-        logger.info("  PENDING ACTION  %s", J(pending_action))
 
     return {
         "inventory_context": inventory_context,
         "item_history_context": item_history_context,
         "conversation_history": conversation_history,
         "pending_action": pending_action,
+        "rejection_context": rejection_context,
+        "session_digest": session_digest,
     }
 
 
@@ -147,9 +213,6 @@ async def load_memory_node(state: WorkflowState) -> dict:
         "NODE ◀── load_memory  worker=%s  mem0_memories=%d  profile_source=%s  elapsed=%.0fms",
         worker_id, len(user_memories), source, (time.perf_counter() - t0) * 1000,
     )
-    for m in user_memories[:5]:
-        mem_text = (m.get("memory") or m.get("text") or "")[:100]
-        logger.debug("  MEM0 RECORD  id=%s  text=%r", m.get("id", "?"), mem_text)
 
     return {
         "user_memories": user_memories,
@@ -247,7 +310,7 @@ async def intent_node(state: WorkflowState) -> dict:
     needs_clarification = bool(
         intent_result.get("needs_clarification")
         or (
-            intent_result.get("confidence", 1.0) < 0.65
+            intent_result.get("confidence", 1.0) < INTENT_CONFIDENCE_THRESHOLD
             and intent_result.get("intent") == "unknown"
         )
     )
@@ -272,7 +335,7 @@ def route_after_intent(state: WorkflowState) -> str:
     conf = intent_result.get("confidence", 0.0)
     needs = state.get("needs_clarification", False)
     if needs:
-        reason = f"confidence={conf:.2f} < 0.65" if conf < 0.65 else "needs_clarification=True from classifier"
+        reason = f"confidence={conf:.2f} < {INTENT_CONFIDENCE_THRESHOLD}" if conf < INTENT_CONFIDENCE_THRESHOLD else "needs_clarification=True from classifier"
         logger.info("ROUTE after_intent → clarify  WHY: %s  intent=%s  [EDGE CASE]", reason, intent)
         return "clarify"
     logger.info("ROUTE after_intent → guard  WHY: intent=%s  confidence=%.2f  (sufficient)", intent, conf)
@@ -324,11 +387,7 @@ def clarify_node(state: WorkflowState) -> dict:
     else:
         question = (
             intent_result.get("clarification_question")
-            or (
-                "I'm not quite sure what you'd like to do. "
-                "Try: 'add [qty] [unit] [item]', 'remove [qty] [unit] [item]', "
-                "or 'how much [item] do we have?'"
-            )
+            or "I didn't quite catch that — did you want to add something, remove it, or check the stock?"
         )
 
     logger.info(
@@ -436,6 +495,7 @@ def rejected_node(state: WorkflowState) -> dict:
     and return without touching inventory.
     """
     from models import ConversationMessage
+    from services.ai_service import save_guard_rejections
 
     guard_result = state.get("guard_result") or {}
     text = state["text"]
@@ -452,6 +512,12 @@ def rejected_node(state: WorkflowState) -> dict:
         "NODE ──▶ rejected  session=%s  text=%r  flagged_items=%s  guard_message=%r",
         session_id, text[:80], flagged_items, guard_message[:100],
     )
+
+    # Persist rejections so ARIA won't re-suggest these items later this session
+    try:
+        save_guard_rejections(session_id, guard_result, db)
+    except Exception as exc:
+        logger.warning("rejected_node  save_guard_rejections failed: %s", exc)
 
     db.add(ConversationMessage(session_id=session_id, role="user", content=text))
     db.add(ConversationMessage(
@@ -531,6 +597,59 @@ async def extraction_node(state: WorkflowState) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# priority_node  — BM25 context pruning (between extraction and aria)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def priority_node(state: WorkflowState) -> dict:
+    """
+    Prune context before ARIA runs:
+      - BM25-rank conversation history (30 turns → top 6)
+      - Keyword-filter inventory + item history to mentioned items
+      - Strip unused lexicons from user profile
+
+    Query/analytics intents skip inventory filtering since the worker
+    may ask about any item. History pruning always applies.
+    """
+    from agents.priority_agent import prioritize_context
+
+    text = state["text"]
+    intent = state.get("pre_classified_intent") or "unknown"
+    intent_result = state.get("intent_result") or {}
+    extraction_result = state.get("extraction_result") or {}
+    conversation_history = state.get("conversation_history") or []
+    inventory_context = state.get("inventory_context") or ""
+    item_history_context = state.get("item_history_context") or ""
+    user_profile_context = state.get("user_profile_context") or ""
+
+    logger.info(
+        "NODE ──▶ priority  intent=%s  history=%d  inv_lines=%d  history_lines=%d",
+        intent,
+        len(conversation_history),
+        inventory_context.count("•"),
+        item_history_context.count("•"),
+    )
+
+    result = prioritize_context(
+        text=text,
+        intent=intent,
+        intent_result=intent_result,
+        extraction_result=extraction_result,
+        conversation_history=conversation_history,
+        inventory_context=inventory_context,
+        item_history_context=item_history_context,
+        user_profile_context=user_profile_context,
+    )
+
+    logger.info(
+        "NODE ◀── priority  focus=%r  history=%d→%d",
+        result["priority_focus"],
+        len(conversation_history),
+        len(result["priority_conversation_history"]),
+    )
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # aria_node  — main ARIA CrewAI agent
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -548,10 +667,11 @@ async def aria_node(state: WorkflowState) -> dict:
     location_name = state.get("location_name") or ""
     session_id = state["session_id"]
 
-    inventory_context = state.get("inventory_context") or ""
-    item_history_context = state.get("item_history_context") or ""
-    conversation_history = state.get("conversation_history") or []
-    user_profile_context = state.get("user_profile_context") or ""
+    # Prefer priority-pruned context when available (set by priority_node)
+    inventory_context = state.get("priority_inventory_context") or state.get("inventory_context") or ""
+    item_history_context = state.get("priority_item_history_context") or state.get("item_history_context") or ""
+    conversation_history = state.get("priority_conversation_history") or state.get("conversation_history") or []
+    user_profile_context = state.get("priority_profile_context") or state.get("user_profile_context") or ""
     fuzzy_units_hint = state.get("fuzzy_units_hint") or ""
     fragment_hint = state.get("fragment_hint") or ""
     pending_action = state.get("pending_action")
@@ -640,13 +760,25 @@ async def aria_node(state: WorkflowState) -> dict:
     if is_affirmation and pending_action and pending_action.get("items"):
         confirmed_data = dict(pending_action)
         confirmed_data["confirmed"] = True
+        pending_items = pending_action.get("items", [])
+        _op_word = {"add": "Added", "subtract": "Removed", "set": "Set"}
+        _parts = []
+        for _it in pending_items:
+            _op = _op_word.get(_it.get("operation", "set"), "Updated")
+            _qty = _it.get("quantity")
+            _unit = (_it.get("unit") or "").strip()
+            _name = _it.get("item_name") or ""
+            _area = _it.get("storage_area") or storage_area or "storage"
+            if _qty is not None and _name:
+                _parts.append(f"{_op} {_qty} {_unit} of {_name} to the {_area}")
+        affirmation_msg = (". ".join(_parts) + ".") if _parts else "Done!"
         logger.info(
             "NODE ◀── aria  SHORT-CIRCUIT (affirmation)  pending_items=%d  action=update",
-            len(pending_action.get("items", [])),
+            len(pending_items),
         )
         return {
             "aria_result": {
-                "message": "Got it, I'll go ahead!",
+                "message": affirmation_msg,
                 "action": "update",
                 "intent": "confirm",
                 "data": confirmed_data,
@@ -655,6 +787,9 @@ async def aria_node(state: WorkflowState) -> dict:
                 "personality_note": None,
             }
         }
+
+    session_digest = state.get("session_digest") or ""
+    rejection_context = state.get("rejection_context") or ""
 
     try:
         aria_result = await aria_process(
@@ -671,6 +806,8 @@ async def aria_node(state: WorkflowState) -> dict:
             pre_classified_intent=pre_classified_intent,
             intent_slots=intent_slots,
             extraction_context=extraction_context,
+            session_digest=session_digest,
+            rejection_context=rejection_context,
         )
     except Exception as exc:
         err_type = (
@@ -678,17 +815,18 @@ async def aria_node(state: WorkflowState) -> dict:
             if "timeout" in str(exc).lower() or "timed out" in str(exc).lower()
             else "failed"
         )
-        logger.error("[aria_node] %s: %s", err_type, exc)
+        logger.error("[aria_node] %s: %s", err_type, exc, exc_info=True)
+        fallback_msg = _ARIA_FALLBACK.get(pre_classified_intent, "Something went wrong on my end. Could you repeat that?")
         aria_result = {
-            "message": f"The AI service {err_type} — please try again in a moment.",
-            "action": "none",
-            "intent": "none",
+            "message": fallback_msg,
+            "action": "clarify",
+            "intent": pre_classified_intent or "unknown",
             "data": {"items": [], "confirmed": False, "flags": []},
             "user_emotion": "neutral",
             "new_lexicons": [],
             "personality_note": "",
         }
-        logger.error("NODE ◀── aria  ERROR  err_type=%s", err_type)
+        logger.error("NODE ◀── aria  ERROR  err_type=%s  fallback_msg=%r", err_type, fallback_msg)
 
     else:
         logger.info(
@@ -726,7 +864,7 @@ def validate_node(state: WorkflowState) -> dict:
         _check_storage_appropriateness,
         _detect_same_day_conflict,
         _normalize_items,
-        _pending_actions,
+        set_pending_action,
     )
 
     aria_result = dict(state.get("aria_result") or {})
@@ -786,6 +924,72 @@ def validate_node(state: WorkflowState) -> dict:
             )
             extra_flags.append("not_relevant")
             logger.warning("validate  GENERIC TERM REJECTED  items=%s", generic_items)
+
+    # ── Extraction confidence gate ──────────────────────────────────────────────
+    # If extraction agent marked items as LOW confidence + requires_confirmation,
+    # downgrade any ARIA "update" action to "confirm" so the worker must say yes
+    # before we write — even if ARIA tried to short-circuit.
+    if action == "update":
+        extraction_items = (state.get("extraction_result") or {}).get("items") or []
+        low_conf = [
+            i for i in extraction_items
+            if i.get("requires_confirmation") and i.get("confidence") == "LOW"
+        ]
+        if low_conf:
+            action = "confirm"
+            extra_flags.append("low_confidence_extraction")
+            logger.warning(
+                "validate  EXTRACTION CONFIDENCE GATE  downgraded update→confirm  "
+                "low_conf_items=%s",
+                [i.get("canonical_name") or i.get("raw_text") for i in low_conf],
+            )
+
+    # ── Cross-item quantity bleed guard ─────────────────────────────────────────
+    # Detects the tamarind bug: ARIA inherited a qty from a *different* prior item
+    # because the worker's message had no numeric content and extraction found nothing.
+    # If ARIA assigned a quantity but (a) the worker's current message has no digits
+    # and (b) extraction also found no quantity for these items, the qty must have
+    # bled from an unrelated prior transaction. Downgrade to clarify and ask.
+    #
+    # SKIP when is_affirmation=True: the worker said "yes"/"yep"/"go ahead" to a
+    # pending action that was already validated — the qty IS correct here, it came
+    # from the legitimate pending, not from cross-item bleeding.
+    if action in ("confirm", "update") and items_list and not state.get("is_affirmation"):
+        user_text = (state.get("text") or "").strip()
+        user_has_digits = any(ch.isdigit() for ch in user_text)
+        if not user_has_digits:
+            extraction_items_with_qty = [
+                i for i in (state.get("extraction_result") or {}).get("items", [])
+                if i.get("quantity") is not None
+            ]
+            aria_items_with_qty = [i for i in items_list if i.get("quantity") is not None]
+            if aria_items_with_qty and not extraction_items_with_qty:
+                # ARIA has quantities but nothing came from the current message.
+                # Prefer slot_item from intent (most reliable) over ARIA's item list
+                # which may be wrong when ARIA confuses a cleared pending item.
+                slot_item = (state.get("intent_result") or {}).get("slot_item")
+                extraction_names = [
+                    i.get("canonical_name") or i.get("raw_text")
+                    for i in (state.get("extraction_result") or {}).get("items", [])
+                    if i.get("canonical_name") or i.get("raw_text")
+                ]
+                if slot_item:
+                    item_names = [slot_item]
+                elif extraction_names:
+                    item_names = extraction_names[:3]
+                else:
+                    item_names = [i["item_name"] for i in aria_items_with_qty[:3]]
+                message = (
+                    f"How much {', '.join(item_names)} would you like to add? "
+                    f"I need a quantity — I can't carry over a number from a different item."
+                )
+                action = "clarify"
+                extra_flags.append("qty_bleed_blocked")
+                logger.warning(
+                    "validate  QTY BLEED BLOCKED  items=%s  "
+                    "user_text=%r  aria_had_qty_from_history=True",
+                    item_names, user_text,
+                )
 
     # ── Collect ALL deterministic warnings first, then apply once ──────────────
     #
@@ -889,9 +1093,23 @@ def validate_node(state: WorkflowState) -> dict:
             aria_question = message.split("\n⚠")[0].rstrip()
             parts: list[str] = [aria_question] + warn_texts
         else:
-            # ARIA returned confirm ("Adding X to shelf...") — drop that message
-            # entirely; jump straight to the warnings without the action prefix.
-            parts = warn_texts
+            # ARIA returned confirm — drop ARIA's message but prepend a concise item
+            # summary so the worker always sees WHAT they are confirming before warnings.
+            confirmed_items = [
+                i for i in items_list
+                if i.get("item_name") and i.get("quantity") is not None
+            ]
+            if confirmed_items:
+                summary_parts = [
+                    f"{i['quantity']} {i.get('unit', '')} of {i['item_name']}".strip()
+                    for i in confirmed_items[:3]
+                ]
+                item_summary = (
+                    f"About to add: {', '.join(summary_parts)} → {workspace_storage}."
+                )
+                parts = [item_summary] + warn_texts
+            else:
+                parts = warn_texts
         message = "\n\n".join(parts) + "\n\nSay yes to proceed anyway, or no to cancel."
         action = "clarify"
 
@@ -912,9 +1130,12 @@ def validate_node(state: WorkflowState) -> dict:
             for item in data.get("items", []):
                 if isinstance(item, dict):
                     item["storage_area"] = workspace_storage
-        _pending_actions[session_id] = data
+        try:
+            set_pending_action(session_id, data, db)
+        except Exception as exc:
+            logger.warning("validate  set_pending_action failed: %s", exc)
         logger.info(
-            "validate  PENDING STORED  session=%s  items=%d  area=%r",
+            "validate  PENDING STORED (DB)  session=%s  items=%d  area=%r",
             session_id, len(_pending_items_with_qty), workspace_storage,
         )
 
@@ -944,7 +1165,8 @@ def execute_node(state: WorkflowState) -> dict:
     """
     from services.ai_service import (
         _execute_inventory_updates,
-        _pending_actions,
+        get_pending_action,
+        clear_pending_action,
         _save_user_insights,
     )
     from models import ConversationMessage
@@ -974,7 +1196,8 @@ def execute_node(state: WorkflowState) -> dict:
 
     # Path 1: ARIA confirmed
     if action == "update" and data.get("confirmed"):
-        pending = _pending_actions.get(session_id, data)
+        db_pending = get_pending_action(session_id, db)
+        pending = db_pending if db_pending else data
         pending_items = pending.get("items", [])
         logger.info(
             "execute  PATH=1 (ARIA action=update + confirmed=True)  "
@@ -986,12 +1209,12 @@ def execute_node(state: WorkflowState) -> dict:
             workspace_location=location_name,
             workspace_storage=storage_area,
         )
-        _pending_actions.pop(session_id, None)
+        clear_pending_action(session_id, db)
         logger.info("execute  Path1 result  inventory_updated=%s", inventory_updated)
 
     # Path 2: ARIA returned intent='confirm' with action='none'
     if action == "none" and intent == "confirm":
-        pending = _pending_actions.get(session_id)
+        pending = get_pending_action(session_id, db)
         if pending:
             logger.info(
                 "execute  PATH=2 (intent=confirm + action=none + pending exists)  [EDGE CASE]  session=%s",
@@ -1002,7 +1225,7 @@ def execute_node(state: WorkflowState) -> dict:
                 workspace_location=location_name,
                 workspace_storage=storage_area,
             )
-            _pending_actions.pop(session_id, None)
+            clear_pending_action(session_id, db)
             logger.info("execute  Path2 result  inventory_updated=%s", inventory_updated)
         else:
             logger.warning(
@@ -1011,26 +1234,28 @@ def execute_node(state: WorkflowState) -> dict:
             )
 
     # Path 3: Python-level affirmation override (ARIA missed the confirmation)
-    if is_affirmation and not inventory_updated and session_id in _pending_actions:
-        logger.warning(
-            "execute  PATH=3 (affirmation override — ARIA missed it)  [EDGE CASE]  session=%s",
-            session_id,
-        )
-        pending = _pending_actions.pop(session_id)
-        inventory_updated = _execute_inventory_updates(
-            pending, worker_id, db,
-            workspace_location=location_name,
-            workspace_storage=storage_area,
-        )
-        if inventory_updated and action not in ("update",):
-            message = f"Done! Added to {storage_area or 'storage'}."
-            action = "update"
-        logger.info("execute  Path3 result  inventory_updated=%s", inventory_updated)
+    if is_affirmation and not inventory_updated:
+        pending = get_pending_action(session_id, db)
+        if pending:
+            logger.warning(
+                "execute  PATH=3 (affirmation override — ARIA missed it)  [EDGE CASE]  session=%s",
+                session_id,
+            )
+            clear_pending_action(session_id, db)
+            inventory_updated = _execute_inventory_updates(
+                pending, worker_id, db,
+                workspace_location=location_name,
+                workspace_storage=storage_area,
+            )
+            if inventory_updated and action not in ("update",):
+                message = f"Done! Added to {storage_area or 'storage'}."
+                action = "update"
+            logger.info("execute  Path3 result  inventory_updated=%s", inventory_updated)
 
     # Clear pending on explicit denial
     if intent == "deny":
-        had_pending = session_id in _pending_actions
-        _pending_actions.pop(session_id, None)
+        had_pending = get_pending_action(session_id, db) is not None
+        clear_pending_action(session_id, db)
         logger.info(
             "execute  PENDING CLEARED (deny)  session=%s  had_pending=%s",
             session_id, had_pending,
@@ -1055,6 +1280,22 @@ def execute_node(state: WorkflowState) -> dict:
         _save_user_insights(worker_id, aria_result, db)
     except Exception as exc:
         logger.warning("execute_node  _save_user_insights failed: %s", exc)
+
+    # Acknowledge any new lexicon entries so the worker knows ARIA learned from them
+    new_lexicons = aria_result.get("new_lexicons") or []
+    if new_lexicons:
+        ack_parts = []
+        for lex in new_lexicons[:2]:
+            orig = (lex.get("original_word") or "").strip()
+            resolved = (lex.get("resolved_word") or orig).strip()
+            if orig and resolved and orig != resolved:
+                ack_parts.append(f"'{orig}' → '{resolved}'")
+            elif orig:
+                ack_parts.append(f"'{orig}'")
+        if ack_parts:
+            ack = " *(noted: I'll remember " + ", ".join(ack_parts) + " for you)*"
+            message = message + ack
+            logger.info("execute  LEXICON ACK  session=%s  %s", session_id, ack[:80])
 
     # Merge and deduplicate all flags
     all_flags = list(data.get("flags") or []) + extra_flags_from_validate
@@ -1165,5 +1406,15 @@ async def persist_memory_node(state: WorkflowState) -> dict:
         logger.info("NODE ◀── persist_memory  mem0_written=True  statements=%d", len(statements))
     else:
         logger.info("NODE ◀── persist_memory  mem0_written=False  (no statements)")
+
+    # Episodic compression — fire-and-forget after conversation is saved
+    try:
+        from services.memory_service import maybe_compress_session
+        db = state.get("db")
+        session_id = state.get("session_id", "")
+        if db and session_id:
+            await maybe_compress_session(session_id, db)
+    except Exception as exc:
+        logger.warning("persist_memory  episodic compression failed: %s", exc)
 
     return {}  # pure side-effect node — no state mutations
