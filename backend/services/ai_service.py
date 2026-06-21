@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import math
 import os
 from typing import Optional, AsyncGenerator, Any
 from sqlalchemy.orm import Session
@@ -11,6 +12,9 @@ from datetime import datetime, date as date_type, timedelta
 from logging_config import J
 
 logger = logging.getLogger(__name__)
+
+_USE_PGVECTOR = os.getenv("DATABASE_URL", "").startswith("postgresql")
+_ITEM_MATCH_THRESHOLD = float(os.getenv("ITEM_MATCH_THRESHOLD", "0.82"))
 
 _PENDING_TTL_MINUTES = int(os.getenv("PENDING_TTL_MINUTES", "15"))
 _SESSION_EXPIRY_HOURS = int(os.getenv("SESSION_EXPIRY_HOURS", "4"))
@@ -507,6 +511,59 @@ def _save_user_insights(worker_id: str, aria_result: dict, db: Session) -> None:
 
 
 # ──────────────────────────────────────────────
+# pgvector helpers — embedding + semantic item lookup
+# ──────────────────────────────────────────────
+
+async def get_embedding(text_input: str) -> list[float]:
+    """Shared embedding helper — delegates to vector_memory_service cache."""
+    from services.vector_memory_service import get_embedding as _get_emb
+    return await _get_emb(text_input)
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(x * x for x in b))
+    if mag_a == 0 or mag_b == 0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
+def _vec_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(f"{v:.6f}" for v in embedding) + "]"
+
+
+async def find_nearest_item(item_name: str, db: Session, threshold: float = _ITEM_MATCH_THRESHOLD) -> Optional[InventoryItem]:
+    """
+    Semantic fallback for item name matching via pgvector ANN.
+    Returns the closest InventoryItem if cosine similarity >= threshold, else None.
+    """
+    if not _USE_PGVECTOR:
+        return None
+    try:
+        vec = await get_embedding(item_name)
+        vec_str = _vec_literal(vec)
+        row = db.execute(text(
+            "SELECT id FROM inventory WHERE name_embedding IS NOT NULL "
+            "ORDER BY name_embedding <=> :vec LIMIT 1"
+        ), {"vec": vec_str}).fetchone()
+        if not row:
+            return None
+        item = db.query(InventoryItem).filter(InventoryItem.id == row.id).first()
+        if item is not None and item.name_embedding is not None:
+            sim = _cosine_similarity(vec, list(item.name_embedding))
+            if sim >= threshold:
+                logger.info(
+                    "  SEMANTIC MATCH  %r → %r  cosine=%.3f",
+                    item_name, item.item_name, sim,
+                )
+                return item
+    except Exception as exc:
+        logger.warning("find_nearest_item error  item=%r  error=%s", item_name, exc)
+    return None
+
+
+# ──────────────────────────────────────────────
 # Validation helpers
 # ──────────────────────────────────────────────
 
@@ -517,7 +574,11 @@ def _get_established_unit(item_name: str, db: Session) -> Optional[str]:
         .order_by(InventoryItem.timestamp.desc())
         .first()
     )
-    return existing.unit if existing else None
+    if existing:
+        return existing.unit
+    # Semantic fallback via pgvector — runs async but we're in a sync context here.
+    # Callers that need semantic resolution should use find_nearest_item() directly.
+    return None
 
 
 # ──────────────────────────────────────────────
@@ -542,6 +603,69 @@ _FRESH_PROTEIN_KEYWORDS = {
 _DAIRY_KEYWORDS = {"milk", "cheese", "butter", "cream", "yogurt", "yoghurt", "egg", "tofu"}
 _FROZEN_KEYWORDS = {"ice cream", "gelato", "sorbet", "frozen"}
 _TROPICAL_KEYWORDS = {"coconut", "banana", "mango", "avocado", "papaya", "guava", "durian"}
+
+# Prototype embeddings for semantic storage classification — cached after first call.
+_CATEGORY_PROTO_TEXTS = {
+    "dry":     "dry pantry staple shelf-stable non-perishable room temperature storage: flour rice pasta dried beans lentils cereal oats barley wheat quinoa oil vinegar salt spice herbs tea coffee sugar biscuit cracker",
+    "protein": "fresh raw meat poultry seafood animal protein refrigerate: chicken beef lamb pork fish salmon tuna prawn shrimp crab lobster squid duck veal mutton wagyu",
+    "dairy":   "dairy milk-based refrigerated cheese fresh: milk butter cheese cream yoghurt yogurt egg tofu burrata mozzarella brie cheddar parmesan ricotta",
+    "frozen":  "frozen freezer ice dessert: ice cream gelato sorbet frozen peas frozen vegetables",
+    "tropical": "tropical fruit room temperature exotic: banana mango avocado coconut pineapple papaya guava durian jackfruit passion fruit lychee",
+}
+_category_prototypes: dict[str, list[float]] = {}
+
+
+async def _get_category_prototypes() -> dict[str, list[float]]:
+    """Lazy-init and cache prototype embeddings (called once at startup or first use)."""
+    global _category_prototypes
+    if not _category_prototypes and _USE_PGVECTOR:
+        for cat, text_rep in _CATEGORY_PROTO_TEXTS.items():
+            _category_prototypes[cat] = await get_embedding(text_rep)
+    return _category_prototypes
+
+
+async def classify_food_category(item_name: str) -> Optional[str]:
+    """
+    Return the storage category for item_name using prototype cosine similarity.
+    Returns None if pgvector is disabled or no category scores above 0.40.
+    Falls through to keyword sets first (fast path).
+    """
+    name = item_name.lower()
+    if any(k in name for k in _DRY_ITEM_KEYWORDS):
+        return "dry"
+    if any(k in name for k in _FRESH_PROTEIN_KEYWORDS):
+        return "protein"
+    if any(k in name for k in _DAIRY_KEYWORDS):
+        return "dairy"
+    if any(k in name for k in _FROZEN_KEYWORDS):
+        return "frozen"
+    if any(k in name for k in _TROPICAL_KEYWORDS):
+        return "tropical"
+
+    if not _USE_PGVECTOR:
+        return None
+    try:
+        protos = await _get_category_prototypes()
+        if not protos:
+            return None
+        vec = await get_embedding(item_name)
+        scores = {cat: _cosine_similarity(vec, proto) for cat, proto in protos.items()}
+        sorted_scores = sorted(scores.values(), reverse=True)
+        best_cat = max(scores, key=scores.get)
+        best_score = sorted_scores[0]
+        second_score = sorted_scores[1] if len(sorted_scores) > 1 else 0.0
+        logger.info(
+            "classify_food_category  item=%r  best=%s  score=%.3f  margin=%.3f  all=%s",
+            item_name, best_cat, best_score, best_score - second_score,
+            {c: f"{s:.2f}" for c, s in scores.items()},
+        )
+        # Accept if score >= 0.30 and has at least 0.04 margin over second-best
+        if best_score >= 0.30 and (best_score - second_score) >= 0.04:
+            return best_cat
+        return None
+    except Exception as exc:
+        logger.warning("classify_food_category error  item=%r  error=%s", item_name, exc)
+        return None
 
 
 def _classify_storage_type(storage_area: str) -> Optional[str]:
@@ -800,6 +924,64 @@ def _execute_single_item(
         unit, storage_area, worker_id, log_details,
     )
     return True
+
+
+async def backfill_turn_embedding(session_id: str, user_text: str, db: Session) -> None:
+    """Embed the latest user turn for this session and store in turn_embedding."""
+    if not _USE_PGVECTOR or not user_text.strip():
+        return
+    try:
+        vec = await get_embedding(user_text)
+        row = (
+            db.query(ConversationMessage)
+            .filter(
+                ConversationMessage.session_id == session_id,
+                ConversationMessage.role == "user",
+                ConversationMessage.turn_embedding.is_(None),
+            )
+            .order_by(ConversationMessage.id.desc())
+            .first()
+        )
+        if row:
+            row.turn_embedding = vec
+            db.commit()
+            logger.info("EMBED TURN  session=%s  id=%d  text=%r", session_id, row.id, user_text[:50])
+    except Exception as exc:
+        logger.warning("backfill_turn_embedding error  session=%s  error=%s", session_id, exc)
+
+
+async def backfill_item_embeddings(items_data: dict, db: Session) -> None:
+    """
+    Embed item names for newly written inventory rows (fired after execute_node commits).
+    Skips rows that already have name_embedding set.
+    """
+    if not _USE_PGVECTOR:
+        return
+    items = []
+    raw = items_data.get("items") or []
+    if raw and isinstance(raw, list):
+        items = [i.get("item_name") for i in raw if i.get("item_name")]
+    elif items_data.get("item_name"):
+        items = [items_data["item_name"]]
+
+    for name in items:
+        try:
+            vec = await get_embedding(name)
+            rows = (
+                db.query(InventoryItem)
+                .filter(
+                    InventoryItem.item_name.ilike(f"%{name}%"),
+                    InventoryItem.name_embedding.is_(None),
+                )
+                .all()
+            )
+            for row in rows:
+                row.name_embedding = vec
+                logger.info("EMBED ITEM  item=%r  id=%d", row.item_name, row.id)
+            if rows:
+                db.commit()
+        except Exception as exc:
+            logger.warning("backfill_item_embeddings error  item=%r  error=%s", name, exc)
 
 
 def _execute_inventory_updates(

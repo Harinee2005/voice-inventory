@@ -4,6 +4,9 @@ Mem0 client for voice-inventory.
 Handles persistent worker memory: tone preferences, custom lexicons,
 personality observations, and inventory patterns.
 
+When MEM0_API_KEY is absent, all calls delegate to vector_memory_service
+(local pgvector table) instead of the Mem0 cloud API.
+
 Scopes used:
   - user  : per-worker preferences and insights, persists across sessions
   (thread scope is skipped — voice interactions are too short-lived)
@@ -19,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 _APP_ID = "voice-inventory"
 _client = None
+
+# When True: use local pgvector table; requires a db session passed to each call.
+USE_LOCAL_VECTOR: bool = not bool(os.getenv("MEM0_API_KEY", "").strip())
 
 
 def _get_client():
@@ -49,12 +55,18 @@ def _extract_list(raw) -> list:
     return []
 
 
-async def get_user_memories(worker_id: str) -> list[dict]:
+async def get_user_memories(worker_id: str, db=None) -> list[dict]:
     """
-    Retrieve all memories for a worker (user scope).
-    mem0ai 2.x: entity params must go inside filters={}, not as top-level kwargs.
-    Response shape: {"count": N, "results": [...], "next": ..., "previous": ...}
+    Retrieve all memories for a worker.
+    Delegates to local pgvector table when USE_LOCAL_VECTOR=True (no MEM0_API_KEY).
     """
+    if USE_LOCAL_VECTOR:
+        if db is None:
+            logger.warning("MEM0 get_user_memories: USE_LOCAL_VECTOR=True but db=None — returning empty")
+            return []
+        from services.vector_memory_service import get_worker_memories
+        return await get_worker_memories(worker_id, db)
+
     if not _enabled():
         logger.debug("MEM0 get_user_memories SKIPPED (MEM0_API_KEY not set)  worker=%s", worker_id)
         return []
@@ -73,12 +85,18 @@ async def get_user_memories(worker_id: str) -> list[dict]:
         return []
 
 
-async def search_user_memories(query: str, worker_id: str, limit: int = 5) -> list[dict]:
+async def search_user_memories(query: str, worker_id: str, limit: int = 5, db=None) -> list[dict]:
     """
     Semantic search over a worker's memories.
-    mem0ai 2.x: entity params must go inside filters={}, not as top-level kwargs.
-    Response shape: {"results": [...]}
+    Delegates to local pgvector ANN when USE_LOCAL_VECTOR=True.
     """
+    if USE_LOCAL_VECTOR:
+        if db is None:
+            logger.warning("MEM0 search_user_memories: USE_LOCAL_VECTOR=True but db=None — returning empty")
+            return []
+        from services.vector_memory_service import search_worker_memories
+        return await search_worker_memories(worker_id, query, db, top_k=limit)
+
     if not _enabled():
         logger.debug("MEM0 search SKIPPED (MEM0_API_KEY not set)  worker=%s  query=%r", worker_id, query[:60])
         return []
@@ -97,12 +115,20 @@ async def search_user_memories(query: str, worker_id: str, limit: int = 5) -> li
         return []
 
 
-async def add_user_memory(content: str, worker_id: str, metadata: Optional[dict] = None) -> dict:
+async def add_user_memory(content: str, worker_id: str, metadata: Optional[dict] = None, db=None) -> dict:
     """
     Add a memory for a worker.
-    mem0ai 2.x: add() still accepts user_id as a top-level kwarg.
-    infer=True (default) auto-deduplicates and merges related memories.
+    Delegates to local pgvector table when USE_LOCAL_VECTOR=True.
     """
+    if USE_LOCAL_VECTOR:
+        if db is None:
+            logger.warning("MEM0 add_user_memory: USE_LOCAL_VECTOR=True but db=None — skipping")
+            return {}
+        from services.vector_memory_service import add_worker_memory
+        memory_type = (metadata or {}).get("memory_type", "general")
+        await add_worker_memory(worker_id, content, memory_type, db, metadata)
+        return {}
+
     if not _enabled() or not (content or "").strip():
         logger.debug("MEM0 ADD SKIPPED  worker=%s  (disabled or empty content)", worker_id)
         return {}
@@ -125,15 +151,15 @@ async def add_user_memory(content: str, worker_id: str, metadata: Optional[dict]
 
 def build_user_profile_from_memories(memories: list[dict]) -> str:
     """
-    Convert Mem0 memory records into a user profile context string
-    formatted for ARIA's system prompt.
+    Convert memory records into a user profile context string for ARIA's system prompt.
+    Works for both Mem0 cloud records and local vector_memory_service records.
     """
     if not memories:
         return ""
     lines = ["[Memory-based worker profile from previous sessions]:"]
     for m in memories:
         if isinstance(m, dict):
-            text = (m.get("memory") or m.get("text") or "").strip()
+            text = (m.get("memory") or m.get("memory_text") or m.get("text") or "").strip()
             if text:
                 lines.append(f"  • {text}")
     return "\n".join(lines) if len(lines) > 1 else ""

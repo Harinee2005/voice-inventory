@@ -1,20 +1,26 @@
 """
-Priority agent — BM25-based context pruning.
+Priority agent — context pruning via BM25 (fallback) or pgvector ANN (preferred).
 
 No LLM call. Runs between extraction_node and aria_node:
-  - BM25-ranks conversation history turns against the current message
+  - Ranks conversation history turns against the current message
   - Keyword-filters inventory and item history to mentioned items
   - Strips unused lexicons from the user profile
 
 For query/analytics intents, inventory filtering is skipped (worker might
 ask about anything). History pruning always applies.
+
+When pgvector is available (DATABASE_URL starts with postgresql), conversation
+history ranking uses cosine ANN over turn_embedding instead of BM25 term-overlap.
 """
 
+import os
 import re
 import logging
-from typing import List, Dict
+from typing import List, Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
+
+_USE_PGVECTOR = os.getenv("DATABASE_URL", "").startswith("postgresql")
 
 _STOPWORDS = {
     "a", "an", "the", "and", "or", "is", "it", "of", "in", "to",
@@ -44,22 +50,8 @@ def _extract_target_items(intent_result: dict, extraction_result: dict) -> List[
     return items
 
 
-def rank_conversation_history(
-    history: List[Dict],
-    query: str,
-    extra_terms: List[str] = None,
-    top_k: int = 6,
-) -> List[Dict]:
-    """
-    BM25-rank conversation history against (current message + item names).
-    Always keeps the last 2 turns (immediately prior context is always relevant).
-    Returns turns in original chronological order.
-    """
-    if not history:
-        return []
-    if len(history) <= top_k:
-        return history
-
+def _rank_with_bm25(history: List[Dict], query: str, extra_terms: List[str], top_k: int) -> List[Dict]:
+    """BM25 fallback ranking — in-memory, no DB needed."""
     try:
         from rank_bm25 import BM25Okapi
     except ImportError:
@@ -72,7 +64,6 @@ def rank_conversation_history(
         query_tokens.extend(_tokenize(term))
 
     must_include = set(range(max(0, len(history) - 2), len(history)))
-
     selected = set(must_include)
     if query_tokens and any(docs):
         scores = BM25Okapi(docs).get_scores(query_tokens)
@@ -92,6 +83,98 @@ def rank_conversation_history(
         len(history), len(result), len(history) - len(result),
     )
     return result
+
+
+def _rank_with_pgvector(
+    history: List[Dict],
+    query: str,
+    extra_terms: List[str],
+    top_k: int,
+    session_id: str,
+    db: Any,
+) -> List[Dict]:
+    """
+    pgvector ANN ranking — embeds the query, fetches top-k turns from the DB,
+    merges with the 2 most recent turns for recency bias, returns as dicts.
+    """
+    try:
+        from sqlalchemy import text as sa_text
+        import asyncio
+        from services.vector_memory_service import get_embedding as _get_embedding
+
+        query_full = query + " " + " ".join(extra_terms or [])
+
+        # get_embedding is async — run it in the current event loop
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, _get_embedding(query_full))
+                vec = future.result(timeout=5)
+        else:
+            vec = loop.run_until_complete(_get_embedding(query_full))
+
+        vec_str = "[" + ",".join(f"{v:.6f}" for v in vec) + "]"
+
+        rows = db.execute(sa_text(
+            "SELECT role, content, timestamp "
+            "FROM conversations "
+            "WHERE session_id = :sid AND turn_embedding IS NOT NULL "
+            "ORDER BY turn_embedding <=> :vec "
+            "LIMIT :k"
+        ), {"sid": session_id, "vec": vec_str, "k": top_k}).fetchall()
+
+        ann_turns = [
+            {"role": r.role, "content": r.content, "timestamp": str(r.timestamp)}
+            for r in rows
+        ]
+
+        # Always include the 2 most recent turns from the pre-loaded list
+        recency_turns = history[-2:] if len(history) >= 2 else history
+
+        # Merge: ann_turns + recency, deduplicate by content
+        seen_content = {t["content"] for t in ann_turns}
+        merged = list(ann_turns)
+        for t in recency_turns:
+            if t.get("content") not in seen_content:
+                merged.append(t)
+                seen_content.add(t.get("content", ""))
+
+        merged = merged[:top_k]
+        logger.info(
+            "priority  history  pgvector ANN %d→%d turns  (session=%s)",
+            len(history), len(merged), session_id,
+        )
+        return merged
+
+    except Exception as exc:
+        logger.warning("priority  pgvector rank failed (%s) — falling back to BM25", exc)
+        return _rank_with_bm25(history, query, extra_terms, top_k)
+
+
+def rank_conversation_history(
+    history: List[Dict],
+    query: str,
+    extra_terms: List[str] = None,
+    top_k: int = 6,
+    db: Any = None,
+    session_id: str = "",
+) -> List[Dict]:
+    """
+    Rank conversation history turns against the current message.
+    Uses pgvector ANN when db + session_id are provided and DATABASE_URL is PostgreSQL.
+    Falls back to BM25 otherwise.
+    Always keeps the last 2 turns. Returns turns in chronological order.
+    """
+    if not history:
+        return []
+    if len(history) <= top_k:
+        return history
+
+    if _USE_PGVECTOR and db is not None and session_id:
+        return _rank_with_pgvector(history, query, extra_terms or [], top_k, session_id, db)
+
+    return _rank_with_bm25(history, query, extra_terms or [], top_k)
 
 
 def _filter_context_lines(context: str, item_names: List[str], bullet: str = "•") -> tuple[str, int, int]:
@@ -185,22 +268,26 @@ def prioritize_context(
     inventory_context: str,
     item_history_context: str,
     user_profile_context: str,
+    db: Any = None,
+    session_id: str = "",
 ) -> dict:
     """
     Main entry point — returns filtered versions of every context section.
 
-    Always prunes conversation history via BM25.
+    Prunes conversation history via pgvector ANN (when db/session_id provided) or BM25.
     Skips item filtering for query/analytics intents (full inventory needed).
     """
     target_items = _extract_target_items(intent_result, extraction_result)
     message_words = set(_tokenize(text))
 
-    # 1. Conversation history — always BM25-pruned
+    # 1. Conversation history — pgvector ANN preferred, BM25 fallback
     ranked_history = rank_conversation_history(
         history=conversation_history,
         query=text,
         extra_terms=target_items,
         top_k=6,
+        db=db,
+        session_id=session_id,
     )
 
     # 2. Inventory + item history — skip item filter for broad intents

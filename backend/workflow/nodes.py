@@ -198,7 +198,7 @@ async def load_memory_node(state: WorkflowState) -> dict:
 
     logger.info("NODE ──▶ load_memory  worker=%s", worker_id)
 
-    user_memories = await get_user_memories(worker_id)
+    user_memories = await get_user_memories(worker_id, db=db)
     mem0_profile = build_user_profile_from_memories(user_memories)
 
     source = "mem0" if mem0_profile else "db"
@@ -638,6 +638,8 @@ def priority_node(state: WorkflowState) -> dict:
         inventory_context=inventory_context,
         item_history_context=item_history_context,
         user_profile_context=user_profile_context,
+        db=state.get("db"),
+        session_id=state.get("session_id", ""),
     )
 
     logger.info(
@@ -1261,7 +1263,7 @@ def execute_node(state: WorkflowState) -> dict:
             session_id, had_pending,
         )
 
-    # Persist conversation turn
+    # Persist conversation turn (turn_embedding populated async in persist_memory_node)
     db.add(ConversationMessage(session_id=session_id, role="user", content=text))
     db.add(ConversationMessage(
         session_id=session_id,
@@ -1402,10 +1404,22 @@ async def persist_memory_node(state: WorkflowState) -> dict:
     if statements:
         combined = " ".join(statements)
         logger.info("  MEM0 WRITE  worker=%s  statements=%d  content=%r", worker_id, len(statements), combined[:200])
-        await add_user_memory(combined, worker_id)
+        db_ref = state.get("db")
+        await add_user_memory(combined, worker_id, db=db_ref)
         logger.info("NODE ◀── persist_memory  mem0_written=True  statements=%d", len(statements))
     else:
         logger.info("NODE ◀── persist_memory  mem0_written=False  (no statements)")
+
+    # Embed user turn + inventory items (pgvector — fires only on PostgreSQL)
+    try:
+        from services.ai_service import backfill_turn_embedding, backfill_item_embeddings
+        db_ref = state.get("db")
+        if db_ref:
+            await backfill_turn_embedding(state.get("session_id", ""), state.get("text", ""), db_ref)
+            if action in ("update",):
+                await backfill_item_embeddings(data, db_ref)
+    except Exception as exc:
+        logger.warning("persist_memory  embedding backfill failed: %s", exc)
 
     # Episodic compression — fire-and-forget after conversation is saved
     try:

@@ -1,7 +1,17 @@
+import os
 from sqlalchemy import Column, Integer, String, Float, DateTime, Text, Boolean, Date, ForeignKey
 from sqlalchemy.orm import relationship
 from database import Base
 from datetime import datetime, date as date_type, timedelta
+
+_USE_PGVECTOR = os.getenv("DATABASE_URL", "").startswith("postgresql")
+if _USE_PGVECTOR:
+    from pgvector.sqlalchemy import Vector as _Vector
+    def _vec_col(dims: int):
+        return Column(_Vector(dims), nullable=True)
+else:
+    def _vec_col(dims: int):
+        return Column(Text, nullable=True)
 
 
 class Location(Base):
@@ -44,6 +54,7 @@ class InventoryItem(Base):
     is_flagged = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     count_date = Column(Date, default=date_type.today, nullable=False, index=True)
+    name_embedding = _vec_col(1536)
 
 
 class ConversationMessage(Base):
@@ -55,6 +66,7 @@ class ConversationMessage(Base):
     content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
     action_taken = Column(String(100), nullable=True)
+    turn_embedding = _vec_col(1536)
 
 
 class ActivityLog(Base):
@@ -124,3 +136,16 @@ class SessionSummary(Base):
     turn_start = Column(Integer, nullable=False)    # first conversation.id in this batch
     turn_end = Column(Integer, nullable=False)      # last conversation.id in this batch
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WorkerMemory(Base):
+    """Local pgvector replacement for Mem0 — persistent per-worker behavioural memory."""
+    __tablename__ = "worker_memories"
+
+    id = Column(Integer, primary_key=True, index=True)
+    worker_id = Column(String(100), nullable=False, index=True)
+    memory_text = Column(Text, nullable=False)
+    memory_type = Column(String(50), default="general")  # tone/lexicon/pattern/personality
+    embedding = _vec_col(1536)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

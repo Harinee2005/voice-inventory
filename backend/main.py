@@ -50,6 +50,9 @@ manager = ConnectionManager()
 
 def _run_migrations():
     """Automatically add any missing columns to existing tables."""
+    from database import DATABASE_URL
+    is_postgres = DATABASE_URL.startswith("postgresql")
+
     inspector = inspect(engine)
     existing_tables = inspector.get_table_names()
     logger.info("MIGRATION CHECK  existing_tables=%s", existing_tables)
@@ -61,6 +64,8 @@ def _run_migrations():
             ("location_name", "VARCHAR(100) DEFAULT ''"),
             ("unit_price",    "FLOAT"),
         ]
+        if is_postgres:
+            migrations.append(("name_embedding", "vector(1536)"))
         with engine.connect() as conn:
             for col, definition in migrations:
                 if col not in existing_cols:
@@ -80,12 +85,42 @@ def _run_migrations():
                     logger.info("MIGRATION  added column user_profiles.%s (%s)", col, definition)
             conn.commit()
 
+    if "conversations" in existing_tables and is_postgres:
+        existing_cols = {c["name"] for c in inspector.get_columns("conversations")}
+        with engine.connect() as conn:
+            if "turn_embedding" not in existing_cols:
+                conn.execute(text("ALTER TABLE conversations ADD COLUMN turn_embedding vector(1536)"))
+                logger.info("MIGRATION  added column conversations.turn_embedding (vector(1536))")
+            conn.commit()
+
     # Create new tables if they don't exist yet (idempotent — SQLAlchemy skips existing tables)
-    from models import PendingAction, RejectedItem, SessionSummary
-    for model in (PendingAction, RejectedItem, SessionSummary):
+    from models import PendingAction, RejectedItem, SessionSummary, WorkerMemory
+    for model in (PendingAction, RejectedItem, SessionSummary, WorkerMemory):
         if model.__tablename__ not in existing_tables:
             model.__table__.create(bind=engine, checkfirst=True)
             logger.info("MIGRATION  created table %s", model.__tablename__)
+
+    # pgvector HNSW indexes — idempotent, only on PostgreSQL
+    if is_postgres:
+        with engine.connect() as conn:
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS worker_memories_embedding_idx "
+                "ON worker_memories USING hnsw (embedding vector_cosine_ops) "
+                "WITH (m = 16, ef_construction = 64)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS inventory_name_embedding_idx "
+                "ON inventory USING hnsw (name_embedding vector_cosine_ops) "
+                "WITH (m = 16, ef_construction = 64)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS conversations_turn_embedding_idx "
+                "ON conversations USING hnsw (turn_embedding vector_cosine_ops) "
+                "WITH (m = 16, ef_construction = 64)"
+            ))
+            conn.commit()
+            logger.info("MIGRATION  pgvector HNSW indexes verified")
 
 
 @asynccontextmanager
