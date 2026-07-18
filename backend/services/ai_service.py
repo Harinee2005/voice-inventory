@@ -288,21 +288,52 @@ def _build_inventory_context(
     db: Session,
     storage_area: str = "",
     location_name: str = "",
-) -> str:
+) -> tuple[str, dict]:
+    """Build the LLM-facing inventory context string AND a structured summary.
+
+    The summary dict feeds the deterministic analytics fast-path so total-value
+    questions are answered with Python-computed figures, never LLM arithmetic:
+      {grand_total, workspace_label, workspace_total, workspace_item_count,
+       area_totals: {label_lower: (label, total)}}
+    """
     today = date_type.today()
     rows = db.execute(
         text("SELECT * FROM v_today_inventory WHERE count_date = :today ORDER BY item_name LIMIT 40"),
         {"today": str(today)},
     ).mappings().all()
 
+    summary: dict = {
+        "grand_total": 0.0,
+        "workspace_label": None,
+        "workspace_total": None,
+        "workspace_item_count": 0,
+        "area_totals": {},
+    }
+
     if not rows:
-        return f"No items counted yet today ({today}). Inventory is fresh for today."
+        return f"No items counted yet today ({today}). Inventory is fresh for today.", summary
 
     grand_total = sum(
         round(r["quantity"] * r["unit_price"], 2)
         for r in rows
         if r["quantity"] and r["unit_price"]
     )
+    summary["grand_total"] = round(grand_total, 2)
+
+    # Per-area totals — keyed by lowercase label for deterministic scope matching
+    for r in rows:
+        if not (r["quantity"] and r["unit_price"]):
+            continue
+        area_label = (
+            f"{r['location_name']} › {r['storage_area']}"
+            if r["location_name"] else r["storage_area"]
+        )
+        for key_label in {area_label, r["storage_area"]}:
+            k = key_label.lower()
+            prev = summary["area_totals"].get(k, (key_label, 0.0))
+            summary["area_totals"][k] = (
+                prev[0], round(prev[1] + round(r["quantity"] * r["unit_price"], 2), 2)
+            )
 
     lines = [
         f"Today's inventory ({today}) [source: v_today_inventory]:",
@@ -333,6 +364,9 @@ def _build_inventory_context(
                 for r in workspace_rows
                 if r["quantity"] and r["unit_price"]
             )
+            summary["workspace_label"] = workspace_label
+            summary["workspace_total"] = round(total_value, 2)
+            summary["workspace_item_count"] = len(workspace_rows)
             lines.append(f"\n## Pre-computed workspace summary for '{workspace_label}'")
             lines.append(f"  Item count: {len(workspace_rows)}")
             lines.append(f"  Total value: ${round(total_value, 2):.2f}")
@@ -349,7 +383,7 @@ def _build_inventory_context(
                 f"always report ${round(total_value, 2):.2f} — do NOT recompute."
             )
 
-    return "\n".join(lines)
+    return "\n".join(lines), summary
 
 
 def _build_item_history_context(db: Session) -> str:
@@ -1034,9 +1068,8 @@ _NODE_LABELS: dict[str, tuple[str, str]] = {
     "preprocess":     ("⚙️", "Preprocess"),
     "intent":         ("🧠", "Intent"),
     "clarify":        ("❓", "Clarify"),
-    "guard":          ("🛡️", "Guard"),
+    "screen_extract": ("🛡️", "Screen+Extract"),
     "rejected":       ("🚫", "Guard"),
-    "extraction":     ("🔍", "Extract"),
     "priority":       ("📌", "Priority"),
     "aria":           ("✨", "ARIA"),
     "validate":       ("✔️", "Validate"),
@@ -1174,42 +1207,12 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
             },
         }
 
-    if node_name == "guard":
+    if node_name == "screen_extract":
+        er = output.get("extraction_result") or {}
         gr = output.get("guard_result") or {}
         rejected = output.get("guard_rejected", False)
         text = s.get("text", "")
-        if not gr:
-            detail = "skipped"
-            items_out: list = []
-        elif rejected:
-            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
-            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
-            items_out = [
-                {"name": i.get("name"), "valid": i.get("is_valid"),
-                 "ambiguous": i.get("is_ambiguous"), "concern": i.get("concern", "")}
-                for i in gr.get("items", [])
-            ]
-        else:
-            detail = "passed"
-            items_out = [{"name": i.get("name"), "valid": True} for i in gr.get("items", [])]
-        return {
-            "icon": icon, "label": label, "detail": detail,
-            "input": {
-                "message": _trunc(text, 80),
-                "model": "gpt-4o-mini",
-                "word_count": len(text.split()),
-            },
-            "output": {
-                "result": "rejected" if rejected else ("skipped" if not gr else "passed"),
-                "items": items_out or None,
-                "guard_message": gr.get("guard_message") or None,
-            },
-        }
-
-    if node_name == "extraction":
-        er = output.get("extraction_result") or {}
-        text = s.get("text", "")
-        if not er:
+        if not er and not gr:
             return {
                 "icon": icon, "label": label, "detail": "skipped",
                 "input": {"reason": "affirmation / query / short message"},
@@ -1217,7 +1220,10 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
             }
         items = er.get("items") or []
         conf = (er.get("inventory_session") or {}).get("overall_confidence", "")
-        if items:
+        if rejected:
+            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
+            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
+        elif items:
             names = ", ".join(
                 f"{i.get('canonical_name') or i.get('raw_text','?')} "
                 f"{i.get('quantity','') or ''} {i.get('unit','') or ''}".strip()
@@ -1237,16 +1243,21 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
                 "unit": i.get("unit", ""),
                 "confidence": i.get("confidence", "?"),
                 "catalog_match": i.get("matched_catalog_item") or "UNKNOWN",
+                "food": i.get("is_food", True),
+                "ambiguous": i.get("is_ambiguous", False),
                 "errors": ", ".join(i.get("validation_errors") or []) or None,
             }
             for i in items
         ]
+        from clients.llm_client import SCREEN_MODEL
         return {
             "icon": icon, "label": label, "detail": detail,
-            "input": {"message": _trunc(text, 80), "model": "gpt-4o"},
+            "input": {"message": _trunc(text, 80), "model": SCREEN_MODEL},
             "output": {
+                "result": "rejected" if rejected else "passed",
                 "overall_confidence": conf or "?",
                 "items": items_out or None,
+                "guard_message": gr.get("guard_message") or None,
             },
         }
 
@@ -1427,15 +1438,6 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
 
 
 # ──────────────────────────────────────────────
-# Guard crew wrapper (used by guard_node in workflow/nodes.py)
-# ──────────────────────────────────────────────
-
-async def _guard_validate_items(text: str) -> dict:
-    from agents.guard_agent import guard_validate
-    return await guard_validate(text)
-
-
-# ──────────────────────────────────────────────
 # Main processing function — LangGraph entry point
 # ──────────────────────────────────────────────
 
@@ -1453,22 +1455,25 @@ async def process_message(
 
         START
           ↓ (parallel)
-        load_context_node + load_memory_node   ← DB context + Mem0 worker memories
+        load_context_node + load_memory_node   ← DB context + worker memories
           ↓ (fan-in)
         preprocess_node                        ← fuzzy units, affirmation, fragment hints
           ↓
-        guard_node                             ← validate items via CrewAI Guard
+        intent_node                            ← gpt-4o-mini classifier
           ↓ (conditional)
-        ├── rejected_node → END
-        └── aria_node                          ← main ARIA CrewAI agent
-              ↓
-          validate_node                        ← Python-level safety checks
-              ↓
-          execute_node                         ← DB writes + conversation save
-              ↓
-          persist_memory_node                  ← Mem0 writeback
-              ↓
-             END
+        ├── clarify_node → END
+        └── screen_extract_node                ← merged guard+extraction (one LLM call)
+              ↓ (conditional)
+            ├── rejected_node → END
+            └── priority_node → aria_node      ← main ARIA agent
+                  ↓
+              validate_node                    ← Python-level safety checks
+                  ↓
+              execute_node                     ← DB writes + conversation save
+                  ↓
+              persist_memory_node              ← memory writeback
+                  ↓
+                 END
     """
     from workflow.graph import get_graph
 

@@ -26,15 +26,18 @@ from utils.circuit_breaker import get_breaker, ServiceUnavailableError
 
 logger = logging.getLogger(__name__)
 
+# Local models (Ollama) are slower than the API, especially on cold load —
+# triple the default timeouts unless the env var pins one explicitly.
+_TIMEOUT_SCALE = 3.0 if os.getenv("LLM_PROVIDER", "openai").strip().lower() == "ollama" else 1.0
+
 # Default per-attempt timeout by agent label
 _DEFAULT_TIMEOUTS: dict[str, float] = {
-    "aria":       float(os.getenv("ARIA_TIMEOUT",       "25")),
-    "intent":     float(os.getenv("INTENT_TIMEOUT",     "10")),
-    "extraction": float(os.getenv("EXTRACTION_TIMEOUT", "15")),
-    "guard":      float(os.getenv("GUARD_TIMEOUT",      "10")),
-    "tts":        float(os.getenv("TTS_TIMEOUT",        "20")),
+    "aria":           float(os.getenv("ARIA_TIMEOUT",           str(25 * _TIMEOUT_SCALE))),
+    "intent":         float(os.getenv("INTENT_TIMEOUT",         str(10 * _TIMEOUT_SCALE))),
+    "screen_extract": float(os.getenv("SCREEN_EXTRACT_TIMEOUT", str(15 * _TIMEOUT_SCALE))),
+    "tts":            float(os.getenv("TTS_TIMEOUT",            "20")),
 }
-_FALLBACK_TIMEOUT = 25.0
+_FALLBACK_TIMEOUT = 25.0 * _TIMEOUT_SCALE
 _MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 _BACKOFF_BASE = 1.5  # seconds: 1.5s, 2.25s, 3.375s
 

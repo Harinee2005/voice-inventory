@@ -1,0 +1,970 @@
+{
+  "summary": {
+    "passed": 6,
+    "total": 10,
+    "avg_score": 0.7743589743589744
+  },
+  "results": [
+    {
+      "id": "analytics_workspace_total",
+      "description": "Total-value query returns the exact Python-computed workspace total",
+      "tags": [
+        "analytics",
+        "gate_b2",
+        "readonly"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "what is the total value of my inventory?",
+          "response": {
+            "message": "The total value for Main Kitchen \u203a Fridge is $97.00.",
+            "action": "query_result",
+            "intent": "analytics",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": []
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "query_result",
+              "actual": "query_result",
+              "weight": 3
+            },
+            {
+              "name": "intent",
+              "passed": true,
+              "expected": "analytics|query",
+              "actual": "analytics",
+              "weight": 2
+            },
+            {
+              "name": "msg_contains:97.00",
+              "passed": true,
+              "expected": "97.00",
+              "actual": "The total value for Main Kitchen \u203a Fridge is $97.00.",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 20600.796208003885,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "query_no_write",
+      "description": "Stock query answers from context and never mutates inventory",
+      "tags": [
+        "query",
+        "readonly"
+      ],
+      "passed": false,
+      "score": 0.6666666666666666,
+      "turns": [
+        {
+          "text": "how much milk do we have?",
+          "response": {
+            "message": "How much milk would you like to add? I need a quantity \u2014 I can't carry over a number from a different item.",
+            "action": "clarify",
+            "intent": "query",
+            "data": {
+              "items": [
+                {
+                  "item_name": "Milk",
+                  "category": "Dairy",
+                  "quantity": null,
+                  "unit": "litre",
+                  "storage_area": "Fridge",
+                  "unit_price": 1.2,
+                  "expiry_date": null,
+                  "operation": "set"
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "qty_bleed_blocked"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "query_result",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "msg_contains:5",
+              "passed": false,
+              "expected": "5",
+              "actual": "How much milk would you like to add? I need a quantity \u2014 I can't carry over a number from a different item.",
+              "weight": 2
+            },
+            {
+              "name": "db:Milk.exists",
+              "passed": true,
+              "expected": "row present",
+              "actual": "present",
+              "weight": 3
+            },
+            {
+              "name": "db:Milk.qty",
+              "passed": true,
+              "expected": "5.0",
+              "actual": "5.0",
+              "weight": 3
+            },
+            {
+              "name": "db:Milk.unit",
+              "passed": true,
+              "expected": "litre",
+              "actual": "litre",
+              "weight": 2
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 38674.07629200898,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "low_confidence_clarify",
+      "description": "Unintelligible input short-circuits to a clarification question",
+      "tags": [
+        "clarify",
+        "readonly"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "umm the thing over there",
+          "response": {
+            "message": "Could you please specify what you want to do with it? For example \u2014 add it, remove it, or check the quantity?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6133.505292003974,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "guard_rejection_no_db_write",
+      "description": "Non-food item is rejected and never touches the DB",
+      "tags": [
+        "guard",
+        "readonly"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "Add 2 motorbikes to the inventory",
+          "response": {
+            "message": "I can only track food and kitchen supplies \u2014 motorbikes aren't inventory items.",
+            "action": "clarify",
+            "intent": "clarify",
+            "data": {
+              "items": [
+                {
+                  "name": "motorbike",
+                  "is_valid": false,
+                  "is_ambiguous": false,
+                  "concern": "vehicle, not food inventory",
+                  "food_interpretation": ""
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "incomplete"
+              ],
+              "guard": true
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify|none",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:no_motorbike",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 20709.052541002166,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "add_confirm_affirm",
+      "description": "Add novel item \u2192 confirm + pending stored, no write; 'yes' \u2192 row written, pending cleared",
+      "tags": [
+        "happy_path",
+        "affirmation"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "Add 5 kg of strawberries",
+          "response": {
+            "message": "Adding 5 kg of strawberries to the Fridge. Confirm?",
+            "action": "confirm",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "strawberries",
+                  "category": "Frozen",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Fridge",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": []
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "confirm",
+              "actual": "confirm",
+              "weight": 3
+            },
+            {
+              "name": "intent",
+              "passed": true,
+              "expected": "add",
+              "actual": "add",
+              "weight": 2
+            },
+            {
+              "name": "db:no_strawberr",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "pending stored",
+              "actual": "stored",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 25265.769167002873,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "Added 5.0 kg of strawberries to the Fridge.",
+            "action": "update",
+            "intent": "confirm",
+            "data": {
+              "items": [
+                {
+                  "item_name": "strawberries",
+                  "category": "Frozen",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Fridge",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": true,
+              "flags": []
+            },
+            "inventory_updated": true
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "update",
+              "actual": "update",
+              "weight": 3
+            },
+            {
+              "name": "db:strawberries.exists",
+              "passed": true,
+              "expected": "row present",
+              "actual": "present",
+              "weight": 3
+            },
+            {
+              "name": "db:strawberries.qty",
+              "passed": true,
+              "expected": "5.0",
+              "actual": "5.0",
+              "weight": 3
+            },
+            {
+              "name": "db:strawberries.unit",
+              "passed": true,
+              "expected": "kg",
+              "actual": "kg",
+              "weight": 2
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6024.994292005431,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "qty_bleed_blocked",
+      "description": "After confirming basil 5 kg, bare 'add tamarind' must NOT inherit the 5",
+      "tags": [
+        "quantity_grounding"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "Add 5 kg of basil",
+          "response": {
+            "message": "Adding 5 kg of basil to the Fridge. Confirm?",
+            "action": "confirm",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "basil",
+                  "category": "Vegetables",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Fridge",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": []
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "confirm",
+              "actual": "confirm",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "pending stored",
+              "actual": "stored",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 27620.76970799535,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "Added 5.0 kg of basil to the Fridge.",
+            "action": "update",
+            "intent": "confirm",
+            "data": {
+              "items": [
+                {
+                  "item_name": "basil",
+                  "category": "Vegetables",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Fridge",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": true,
+              "flags": []
+            },
+            "inventory_updated": true
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "update",
+              "actual": "update",
+              "weight": 3
+            },
+            {
+              "name": "db:basil.exists",
+              "passed": true,
+              "expected": "row present",
+              "actual": "present",
+              "weight": 3
+            },
+            {
+              "name": "db:basil.qty",
+              "passed": true,
+              "expected": "5.0",
+              "actual": "5.0",
+              "weight": 3
+            },
+            {
+              "name": "db:basil.unit",
+              "passed": true,
+              "expected": "kg",
+              "actual": "kg",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6067.132583993953,
+          "error": null
+        },
+        {
+          "text": "add tamarind",
+          "response": {
+            "message": "Adding tamarind to the Fridge. Confirm?",
+            "action": "clarify",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "tamarind",
+                  "category": "Beverages",
+                  "quantity": null,
+                  "unit": "kg",
+                  "storage_area": "Fridge",
+                  "unit_price": 2.0,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": []
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:no_tamarind",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 18252.39545801014,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "fragment_flow_combines",
+      "description": "'add 5 kg' \u2192 clarify; 'wheat' \u2192 combined confirm; 'yes' \u2192 5 kg wheat written",
+      "tags": [
+        "fragment"
+      ],
+      "passed": false,
+      "score": 0.38461538461538464,
+      "turns": [
+        {
+          "text": "add 5 kg",
+          "response": {
+            "message": "I can only track food and kitchen supplies \u2014 did you mean to specify an item with that weight?",
+            "action": "clarify",
+            "intent": "clarify",
+            "data": {
+              "items": [
+                {
+                  "name": "UNKNOWN",
+                  "is_valid": false,
+                  "is_ambiguous": false,
+                  "concern": "weight unit without item specified, not a valid inventory item",
+                  "food_interpretation": "UNKNOWN"
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "incomplete"
+              ],
+              "guard": true
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 17674.901042002602,
+          "error": null
+        },
+        {
+          "text": "wheat",
+          "response": {
+            "message": "Would you like to add, remove, or check the quantity of wheat?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 5275.709333000123,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "How much wheat would you like to add? I need a quantity \u2014 I can't carry over a number from a different item.",
+            "action": "clarify",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "wheat",
+                  "category": "Dry Goods",
+                  "quantity": null,
+                  "unit": "kg",
+                  "storage_area": "Dry Storage",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "qty_bleed_blocked"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "db:wheat.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 21108.021708001615,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "deny_clears_pending",
+      "description": "Deny after a confirm clears the pending action and writes nothing; 'litres' must not trigger a typo question",
+      "tags": [
+        "denial",
+        "fuzzy_units"
+      ],
+      "passed": false,
+      "score": 0.5384615384615384,
+      "turns": [
+        {
+          "text": "Add 3 litres of orange juice",
+          "response": {
+            "message": "Adding 3 litres of orange juice to the Fridge. Confirm?",
+            "action": "confirm",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "orange juice",
+                  "category": "Beverages",
+                  "quantity": 3.0,
+                  "unit": "litre",
+                  "storage_area": "Fridge",
+                  "unit_price": 2.5,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": []
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "confirm",
+              "actual": "confirm",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "pending stored",
+              "actual": "stored",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 31688.67487499665,
+          "error": null
+        },
+        {
+          "text": "no, cancel that",
+          "response": {
+            "message": "Got it \u2014 canceling the addition of 3 litres of orange juice to the Fridge.",
+            "action": "update",
+            "intent": "deny",
+            "data": {
+              "items": [],
+              "confirmed": true,
+              "flags": []
+            },
+            "inventory_updated": true
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "none",
+              "actual": "update",
+              "weight": 3
+            },
+            {
+              "name": "db:no_orange juice",
+              "passed": false,
+              "expected": "no rows",
+              "actual": "1 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 16047.355334012536,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "unit_incompatible_rice_litres",
+      "description": "'5 litres of rice' must end up stored in kg (RULE 1 \u2192 deterministic in B3)",
+      "tags": [
+        "unit",
+        "gate_b3"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "Add 5 litres of rice",
+          "response": {
+            "message": "Got it \u2014 adding 5 kg of rice to Dry Storage. Confirm?",
+            "action": "confirm",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "rice",
+                  "category": "Dry Goods",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Dry Storage",
+                  "unit_price": 1.2,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "unit_changed"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "update|confirm",
+              "actual": "confirm",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 31345.411666989094,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "Added 5.0 kg of rice to the Dry Storage.",
+            "action": "update",
+            "intent": "confirm",
+            "data": {
+              "items": [
+                {
+                  "item_name": "rice",
+                  "category": "Dry Goods",
+                  "quantity": 5.0,
+                  "unit": "kg",
+                  "storage_area": "Dry Storage",
+                  "unit_price": 1.2,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": true,
+              "flags": [
+                "unit_changed"
+              ]
+            },
+            "inventory_updated": true
+          },
+          "checks": [
+            {
+              "name": "db:rice.exists",
+              "passed": true,
+              "expected": "row present",
+              "actual": "present",
+              "weight": 3
+            },
+            {
+              "name": "db:rice.qty",
+              "passed": true,
+              "expected": "5.0",
+              "actual": "5.0",
+              "weight": 3
+            },
+            {
+              "name": "db:rice.unit",
+              "passed": true,
+              "expected": "kg",
+              "actual": "kg",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6319.795083996723,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "multi_item_add",
+      "description": "Two items in one utterance \u2192 both captured, both written on confirm",
+      "tags": [
+        "multi_item"
+      ],
+      "passed": false,
+      "score": 0.15384615384615385,
+      "turns": [
+        {
+          "text": "Add 2 kg of onions and 3 bottles of olive oil",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6397.088124998845,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "How much onions, olive oil would you like to add? I need a quantity \u2014 I can't carry over a number from a different item.",
+            "action": "clarify",
+            "intent": "add",
+            "data": {
+              "items": [
+                {
+                  "item_name": "onions",
+                  "category": "Vegetables",
+                  "quantity": null,
+                  "unit": "kg",
+                  "storage_area": "Dry Storage",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                },
+                {
+                  "item_name": "olive oil",
+                  "category": "Beverages",
+                  "quantity": null,
+                  "unit": "bottles",
+                  "storage_area": "Dry Storage",
+                  "unit_price": null,
+                  "expiry_date": null,
+                  "operation": "add"
+                }
+              ],
+              "confirmed": false,
+              "flags": [
+                "qty_bleed_blocked"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "db:onions.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:olive oil.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 31230.11029198824,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

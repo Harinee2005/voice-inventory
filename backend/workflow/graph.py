@@ -11,13 +11,13 @@ Graph topology:
       ↓                  ↓
       └──── preprocess ───┘   (fan-in)
                   ↓
-             intent_node       ← dedicated classifier (gpt-4o-mini, temp=0)
+             intent_node          ← dedicated classifier (gpt-4o-mini, temp=0)
                   ↓
          ┌────────┴────────┐
-      clarify            guard           (low-confidence intent → clarify)
-         ↓                  ↓
+      clarify        screen_extract   (low-confidence intent → clarify)
+         ↓                  ↓          (merged guard + extraction — one LLM call)
         END      ┌──────────┴──────────┐
-              rejected            extraction      ← strict item extraction
+              rejected             priority     ← BM25/pgvector context pruning
                  ↓                     ↓
                 END                  aria
                                       ↓
@@ -40,10 +40,9 @@ from workflow.nodes import (
     intent_node,
     clarify_node,
     route_after_intent,
-    guard_node,
-    route_after_guard,
+    screen_extract_node,
+    route_after_screen,
     rejected_node,
-    extraction_node,
     priority_node,
     aria_node,
     validate_node,
@@ -60,9 +59,8 @@ def build_graph():
     graph.add_node("preprocess",     preprocess_node)
     graph.add_node("intent",         intent_node)
     graph.add_node("clarify",        clarify_node)
-    graph.add_node("guard",          guard_node)
+    graph.add_node("screen_extract", screen_extract_node)
     graph.add_node("rejected",       rejected_node)
-    graph.add_node("extraction",     extraction_node)
     graph.add_node("priority",       priority_node)
     graph.add_node("aria",           aria_node)
     graph.add_node("validate",       validate_node)
@@ -82,20 +80,19 @@ def build_graph():
     graph.add_conditional_edges(
         "intent",
         route_after_intent,
-        {"clarify": "clarify", "guard": "guard"},
+        {"clarify": "clarify", "guard": "screen_extract"},
     )
     graph.add_edge("clarify", END)
 
-    # Guard gate
+    # Screening gate (merged guard + extraction)
     graph.add_conditional_edges(
-        "guard",
-        route_after_guard,
-        {"rejected": "rejected", "extraction": "extraction"},
+        "screen_extract",
+        route_after_screen,
+        {"rejected": "rejected", "priority": "priority"},
     )
     graph.add_edge("rejected",   END)
 
-    # Extraction → Priority (BM25 pruning) → ARIA → happy path
-    graph.add_edge("extraction",      "priority")
+    # Priority (BM25 pruning) → ARIA → happy path
     graph.add_edge("priority",        "aria")
     graph.add_edge("aria",            "validate")
     graph.add_edge("validate",        "execute")

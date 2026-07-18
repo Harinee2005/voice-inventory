@@ -173,13 +173,7 @@ class TestCase:
     max_sentences: int = 3
 
 
-@dataclass
-class CheckResult:
-    name: str
-    passed: bool
-    expected: str
-    actual: str
-    weight: int
+from eval.common import CheckResult, weighted_score, all_critical_passed  # noqa: E402
 
 
 @dataclass
@@ -839,11 +833,9 @@ def grade(tc: TestCase, result: dict) -> GradeResult:
             chk(f"item[{i}].price>0", price is not None and price > 0,
                 ">0", price, weight=1)
 
-    total_w  = sum(c.weight for c in checks)
-    passed_w = sum(c.weight for c in checks if c.passed)
-    score    = passed_w / total_w if total_w > 0 else 1.0
+    score = weighted_score(checks)
     # Passed = all high-weight (≥2) checks are green
-    all_critical = all(c.passed for c in checks if c.weight >= 2)
+    all_critical = all_critical_passed(checks)
 
     return GradeResult(
         test_id=tc.id,

@@ -174,55 +174,25 @@ def _build_rich_status(node_name: str, delta: dict, state: dict | None = None) -
             },
         }
 
-    # ── guard ─────────────────────────────────────────────────────────────────
-    if node_name == "guard":
+    # ── screen_extract (merged guard + extraction, one LLM call) ─────────────
+    if node_name == "screen_extract":
+        er = delta.get("extraction_result") or {}
         gr = delta.get("guard_result") or {}
         rejected = delta.get("guard_rejected", False)
         text = s.get("text", "")
-        if not gr:
-            detail = "skipped"
-            items_out: list[dict] = []
-        elif rejected:
-            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
-            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
-            items_out = [
-                {"name": i.get("name"), "valid": i.get("is_valid"),
-                 "ambiguous": i.get("is_ambiguous"), "concern": i.get("concern", "")}
-                for i in gr.get("items", [])
-            ]
-        else:
-            detail = "passed"
-            items_out = [{"name": i.get("name"), "valid": True}
-                         for i in gr.get("items", [])]
-        return {
-            "step": "guard", "icon": "🛡️", "label": "Guard",
-            "detail": detail,
-            "input": {
-                "message": _trunc(text, 80),
-                "model": "gpt-4o-mini",
-                "word_count": len(text.split()),
-            },
-            "output": {
-                "result": "rejected" if rejected else ("skipped" if not gr else "passed"),
-                "items": items_out or None,
-                "guard_message": gr.get("guard_message") or None,
-            },
-        }
-
-    # ── extraction ────────────────────────────────────────────────────────────
-    if node_name == "extraction":
-        er = delta.get("extraction_result") or {}
-        text = s.get("text", "")
-        if not er:
+        if not er and not gr:
             return {
-                "step": "extract", "icon": "🔍", "label": "Extract",
+                "step": "screen_extract", "icon": "🛡️", "label": "Screen+Extract",
                 "detail": "skipped",
                 "input": {"reason": "affirmation / query / short message"},
                 "output": {"items": None},
             }
         items = er.get("items") or []
         conf = (er.get("inventory_session") or {}).get("overall_confidence", "")
-        if items:
+        if rejected:
+            flagged = [i.get("name", "?") for i in gr.get("items", []) if not i.get("is_valid")]
+            detail = "rejected — " + (", ".join(flagged[:3]) or "non-food item")
+        elif items:
             names = ", ".join(
                 f"{i.get('canonical_name') or i.get('raw_text', '?')} "
                 f"{i.get('quantity', '') or ''} {i.get('unit', '') or ''}".strip()
@@ -242,20 +212,26 @@ def _build_rich_status(node_name: str, delta: dict, state: dict | None = None) -
                 "unit": i.get("unit", ""),
                 "confidence": i.get("confidence", "?"),
                 "catalog_match": i.get("matched_catalog_item") or "UNKNOWN",
+                "food": i.get("is_food", True),
+                "ambiguous": i.get("is_ambiguous", False),
+                "concern": i.get("concern") or None,
                 "errors": ", ".join(i.get("validation_errors") or []) or None,
             }
             for i in items
         ]
+        from clients.llm_client import SCREEN_MODEL
         return {
-            "step": "extract", "icon": "🔍", "label": "Extract",
+            "step": "screen_extract", "icon": "🛡️", "label": "Screen+Extract",
             "detail": detail,
             "input": {
                 "message": _trunc(text, 80),
-                "model": "gpt-4o",
+                "model": SCREEN_MODEL,
             },
             "output": {
+                "result": "rejected" if rejected else "passed",
                 "overall_confidence": conf or "?",
                 "items": items_out or None,
+                "guard_message": gr.get("guard_message") or None,
             },
         }
 
@@ -658,6 +634,13 @@ class ChatService:
 
                 if event_type == "graph_done":
                     graph_done = True
+                    continue
+
+                # Streamed ARIA message tokens (ARIA_STREAMING=1) — the frontend
+                # already renders 'chunk' events with a typing cursor and replaces
+                # the streamed text atomically with done.message.
+                if event_type == "message_chunk":
+                    yield _sse_event({"text": event.get("text", "")}, event_name="chunk")
                     continue
 
                 chunk = event.get("chunk")

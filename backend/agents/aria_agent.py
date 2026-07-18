@@ -4,10 +4,18 @@ ARIA agent — main inventory assistant.
 Replaces the CrewAI ARIA agent with a direct async OpenAI call.
 System prompt carries the static rules; user message carries the
 dynamic per-turn context (inventory state, history, workspace, etc.).
+
+When ARIA_STREAMING=1 and the caller supplies on_message_delta, the response
+is streamed and the "message" field's tokens are pushed to the callback as
+they arrive (message is ARIAResult's first field, so this starts within the
+first few output tokens). Any streaming failure falls back to the
+non-streaming call_llm path (retries + circuit breaker).
 """
 
 import logging
+import os
 import time
+from typing import Awaitable, Callable, Optional
 
 from agents.schemas import ARIAResult
 from clients.llm_client import get_llm_client, get_llm_model
@@ -15,6 +23,10 @@ from logging_config import J
 from utils.llm_retry import call_llm
 
 logger = logging.getLogger(__name__)
+
+
+def _streaming_enabled() -> bool:
+    return os.getenv("ARIA_STREAMING", "0").strip() in ("1", "true", "yes")
 
 
 _SYSTEM_PROMPT = """\
@@ -165,21 +177,11 @@ Infer meaning from context and add to new_lexicons[].
 If the User Profile lists known lexicons, apply them immediately without asking.
 
 ═══════════════════════════════════════════════
-## RULE 7 — TOTAL VALUE QUERIES (ABSOLUTE RULE — NO EXCEPTIONS)
+## RULE 7 — TOTAL VALUE QUERIES (fallback — most are answered before you run)
 ═══════════════════════════════════════════════
-The inventory context contains a "## Pre-computed workspace summary" with an exact
-server-calculated total. This number is computed in Python and is ALWAYS correct.
-
-A) Workspace total query — includes unscoped "total value" / "total inventory" / "how much
-   is everything worth" with no location keyword → Use ONLY the pre-computed workspace
-   total. Say: "The total value for [workspace label] is $X.XX." Do NOT sum across all locations.
-
-B) All-locations query ("grand total", "all locations", "everything", "across all sites") →
-   Use the [Grand total across ALL locations: $X.XX] figure. Do NOT recompute.
-
-C) Specific area query → Sum only the items for that named area from the line items.
-
-NEVER mix up workspace total with all-locations total.
+NEVER compute totals yourself. Copy the exact pre-computed figures from the inventory
+context: unscoped "total value" → the "## Pre-computed workspace summary" total;
+"grand total"/"all locations" → the [Grand total across ALL locations] figure.
 
 ═══════════════════════════════════════════════
 ## RULE 8 — QUANTITY GROUNDING (ABSOLUTE — NO EXCEPTIONS)
@@ -351,6 +353,43 @@ Worker said: "{text}"
 """
 
 
+async def _stream_aria(
+    model: str,
+    user_message: str,
+    on_message_delta: Callable[[str], Awaitable[None]],
+) -> ARIAResult:
+    """Stream the ARIA completion, pushing message-field deltas to the callback.
+
+    Raises on any failure — the caller falls back to the non-streaming path.
+    """
+    from utils.json_stream import MessageFieldExtractor
+
+    extractor = MessageFieldExtractor()
+    async with get_llm_client().beta.chat.completions.stream(
+        model=model,
+        messages=[
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        response_format=ARIAResult,
+        temperature=0.2,
+    ) as stream:
+        async for event in stream:
+            if event.type == "content.delta" and not extractor.done:
+                new_text = extractor.feed(event.delta)
+                if new_text:
+                    try:
+                        await on_message_delta(new_text)
+                    except Exception as cb_exc:  # UI delivery must never kill the turn
+                        logger.warning("ARIA STREAM callback error: %s", cb_exc)
+        final = await stream.get_final_completion()
+    parsed = final.choices[0].message.parsed
+    if parsed is None:
+        content = final.choices[0].message.content or "{}"
+        parsed = ARIAResult.model_validate_json(content)
+    return parsed
+
+
 async def aria_process(
     text: str,
     inventory_context: str,
@@ -367,6 +406,7 @@ async def aria_process(
     extraction_context: str = "",
     session_digest: str = "",
     rejection_context: str = "",
+    on_message_delta: Optional[Callable[[str], Awaitable[None]]] = None,
 ) -> dict:
     """
     Process a worker's message through ARIA and return a dict matching ARIAResult schema.
@@ -403,24 +443,37 @@ async def aria_process(
     logger.debug("ARIA PROMPT:\n%s", user_message[:2000])
     t0 = time.perf_counter()
     try:
-        response = await call_llm(
-            lambda: get_llm_client().beta.chat.completions.parse(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": user_message},
-                ],
-                response_format=ARIAResult,
-                temperature=0.2,
-            ),
-            label="aria",
-            model=model,
-        )
-        parsed = response.choices[0].message.parsed
+        parsed = None
+        if on_message_delta is not None and _streaming_enabled():
+            try:
+                parsed = await _stream_aria(model, user_message, on_message_delta)
+                logger.info("ARIA STREAMED  message tokens delivered incrementally")
+            except Exception as stream_exc:
+                logger.warning(
+                    "ARIA STREAM FAILED  [FALLBACK to non-streaming]  error_type=%s  error=%s",
+                    type(stream_exc).__name__, stream_exc,
+                )
+                parsed = None
+
         if parsed is None:
-            # Refusal or unparseable — fall back to content parsing
-            content = response.choices[0].message.content or "{}"
-            parsed = ARIAResult.model_validate_json(content)
+            response = await call_llm(
+                lambda: get_llm_client().beta.chat.completions.parse(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    response_format=ARIAResult,
+                    temperature=0.2,
+                ),
+                label="aria",
+                model=model,
+            )
+            parsed = response.choices[0].message.parsed
+            if parsed is None:
+                # Refusal or unparseable — fall back to content parsing
+                content = response.choices[0].message.content or "{}"
+                parsed = ARIAResult.model_validate_json(content)
         result = parsed.model_dump()
         elapsed = (time.perf_counter() - t0) * 1000
         items = result.get("data", {}).get("items", [])

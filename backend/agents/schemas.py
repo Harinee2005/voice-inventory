@@ -62,6 +62,34 @@ class ExtractionResult(BaseModel):
     items: List[ExtractionItem] = Field(default_factory=list)
 
 
+# ─── Screen + Extract (merged guard + extraction — one LLM call) ─────────────
+
+class ScreenedItem(ExtractionItem):
+    """ExtractionItem plus the guard's food-screening judgment."""
+
+    is_food: bool = True
+    is_ambiguous: bool = False
+    concern: str = ""
+    food_interpretation: str = ""
+
+
+class ScreenedExtractionResult(BaseModel):
+    """Combined output of the screen_extract agent.
+
+    Extraction fields feed ARIA's context; screening fields
+    (has_items/all_valid/guard_message) drive the rejected-path routing
+    exactly like GuardResult did.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    inventory_session: ExtractionSession = Field(default_factory=ExtractionSession)
+    items: List[ScreenedItem] = Field(default_factory=list)
+    has_items: bool = False
+    all_valid: bool = True
+    guard_message: str = ""
+
+
 # ─── Guard ────────────────────────────────────────────────────────────────────
 
 class GuardItem(BaseModel):

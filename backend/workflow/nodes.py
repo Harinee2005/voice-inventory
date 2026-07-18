@@ -11,20 +11,23 @@ Graph topology (built in graph.py):
                    ↓  (fan-in)
              preprocess_node
                    ↓
-              guard_node
+              intent_node
                    ↓  (conditional)
           ┌────────┴────────┐
-       "rejected"         "aria"
-          ↓                  ↓
-    rejected_node        aria_node
-          ↓                  ↓
-         END          validate_node
-                           ↓
-                     execute_node
-                           ↓
-                  persist_memory_node
-                           ↓
-                          END
+      clarify_node    screen_extract_node   (merged guard + extraction, one LLM call)
+          ↓                  ↓  (conditional)
+         END        ┌────────┴────────┐
+                rejected_node    priority_node
+                    ↓                ↓
+                   END           aria_node
+                                     ↓
+                              validate_node
+                                     ↓
+                               execute_node
+                                     ↓
+                          persist_memory_node
+                                     ↓
+                                    END
 """
 
 import asyncio
@@ -103,7 +106,7 @@ async def load_context_node(state: WorkflowState) -> dict:
     except Exception as exc:
         logger.warning("load_context  user profile init failed: %s", exc)
 
-    inventory_context = _build_inventory_context(
+    inventory_context, inventory_summary = _build_inventory_context(
         db, storage_area=storage_area, location_name=location_name
     )
     item_history_context = _build_item_history_context(db)
@@ -170,6 +173,7 @@ async def load_context_node(state: WorkflowState) -> dict:
 
     return {
         "inventory_context": inventory_context,
+        "inventory_summary": inventory_summary,
         "item_history_context": item_history_context,
         "conversation_history": conversation_history,
         "pending_action": pending_action,
@@ -418,20 +422,40 @@ def clarify_node(state: WorkflowState) -> dict:
 # guard_node  — item validity check
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def guard_node(state: WorkflowState) -> dict:
+async def screen_extract_node(state: WorkflowState) -> dict:
     """
-    Run the Guard CrewAI agent to verify items are legitimate restaurant inventory.
+    One LLM call that replaces the former guard_node + extraction_node:
+    screens items for food validity AND extracts strict structured items.
 
-    Skipped for very short messages and when the last assistant turn was
-    a clarification request — those are almost always confirmations or
-    fragment completions rather than new item introductions.
+    Writes BOTH guard_result (adapter — same shape rejected_node and the
+    UI status panel always consumed) and extraction_result.
+
+    Skipped entirely for affirmations, non-inventory intents
+    (query/analytics/deny/confirm), and messages of ≤2 words — those carry
+    no new items to screen or extract.
+
+    When the last assistant turn was a clarification request, extraction
+    still runs (the fragment may name an item) but rejection is disabled —
+    clarify follow-ups are fragment completions, not new item introductions.
     """
-    from agents.guard_agent import guard_validate
+    from agents.screen_extract_agent import screen_and_extract
 
     text = state["text"]
+    pre_classified_intent = state.get("pre_classified_intent") or "unknown"
+    is_affirmation = state.get("is_affirmation", False)
     conversation_history = state.get("conversation_history") or []
 
+    skip_intents = {"query", "analytics", "deny", "confirm"}
     word_count = len(text.split())
+
+    skip = is_affirmation or pre_classified_intent in skip_intents or word_count <= 2
+    skip_reason = (
+        "affirmation" if is_affirmation
+        else f"intent={pre_classified_intent}" if pre_classified_intent in skip_intents
+        else "short_message" if word_count <= 2
+        else None
+    )
+
     last_was_clarify = (
         conversation_history
         and conversation_history[-1].get("role") == "assistant"
@@ -445,44 +469,93 @@ async def guard_node(state: WorkflowState) -> dict:
             )
         )
     )
-    skip_guard = word_count <= 3 or last_was_clarify
 
     logger.info(
-        "NODE ──▶ guard  text=%r  word_count=%d  skip=%s  reason=%s",
-        text[:80], word_count, skip_guard,
-        "short_message" if word_count <= 3 else ("last_was_clarify" if last_was_clarify else "none"),
+        "NODE ──▶ screen_extract  text=%r  intent=%s  word_count=%d  skip=%s  "
+        "reason=%s  last_was_clarify=%s",
+        text[:80], pre_classified_intent, word_count, skip, skip_reason, last_was_clarify,
     )
 
-    if skip_guard:
-        logger.info("NODE ◀── guard  SKIPPED  guard_rejected=False")
-        return {"guard_result": {}, "guard_rejected": False}
+    if skip:
+        logger.info("NODE ◀── screen_extract  SKIPPED")
+        return {"extraction_result": {}, "guard_result": {}, "guard_rejected": False}
 
-    guard_result = await guard_validate(text)
+    try:
+        result = await screen_and_extract(text)
+    except Exception as exc:
+        logger.warning("screen_extract_node  [FALLBACK]  error=%s — ARIA sees raw text", exc)
+        return {"extraction_result": {}, "guard_result": {}, "guard_rejected": False}
+
+    # Deterministic RULE 1: physically impossible units (solid in litres,
+    # liquid in kg) are corrected in code before ARIA ever sees them.
+    from utils.unit_converter import incompatible_unit_correction
+    for _item in result.get("items", []):
+        _corr = incompatible_unit_correction(
+            _item.get("canonical_name") or _item.get("raw_text", ""),
+            _item.get("category", ""),
+            _item.get("unit", ""),
+        )
+        if _corr and _corr != _item.get("unit"):
+            logger.info(
+                "screen_extract  UNIT AUTO-CORRECTED  [EDGE CASE]  item=%r  %s → %s",
+                _item.get("canonical_name"), _item.get("unit"), _corr,
+            )
+            _item["unit_corrected_from"] = _item.get("unit")
+            _item["unit"] = _corr
+
+    extraction_result = {
+        "inventory_session": result.get("inventory_session", {}),
+        "items": result.get("items", []),
+    }
+    # Adapter: project screening fields into the GuardResult shape that
+    # rejected_node, save_guard_rejections, and the status panel consume.
+    guard_result = {
+        "has_items": result.get("has_items", False),
+        "all_valid": result.get("all_valid", True),
+        "items": [
+            {
+                "name": i.get("canonical_name") or i.get("raw_text", ""),
+                "is_valid": i.get("is_food", True),
+                "is_ambiguous": i.get("is_ambiguous", False),
+                "concern": i.get("concern", ""),
+                "food_interpretation": i.get("food_interpretation", ""),
+            }
+            for i in result.get("items", [])
+        ],
+        "guard_message": result.get("guard_message", ""),
+    }
     guard_rejected = bool(
-        guard_result.get("has_items") and not guard_result.get("all_valid")
+        guard_result["has_items"]
+        and not guard_result["all_valid"]
+        and not last_was_clarify
     )
     logger.info(
-        "NODE ◀── guard  has_items=%s  all_valid=%s  guard_rejected=%s",
-        guard_result.get("has_items"), guard_result.get("all_valid"), guard_rejected,
+        "NODE ◀── screen_extract  items=%d  has_items=%s  all_valid=%s  guard_rejected=%s",
+        len(extraction_result["items"]), guard_result["has_items"],
+        guard_result["all_valid"], guard_rejected,
     )
-    return {"guard_result": guard_result, "guard_rejected": guard_rejected}
+    return {
+        "extraction_result": extraction_result,
+        "guard_result": guard_result,
+        "guard_rejected": guard_rejected,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Route after guard
+# Route after screen_extract
 # ─────────────────────────────────────────────────────────────────────────────
 
-def route_after_guard(state: WorkflowState) -> str:
+def route_after_screen(state: WorkflowState) -> str:
     rejected = state.get("guard_rejected", False)
     guard_result = state.get("guard_result") or {}
     if rejected:
         flagged = [i.get("name") for i in guard_result.get("items", []) if not i.get("is_valid") or i.get("is_ambiguous")]
-        logger.warning("ROUTE after_guard → rejected  WHY: invalid/ambiguous items=%s  [EDGE CASE]", flagged)
+        logger.warning("ROUTE after_screen → rejected  WHY: invalid/ambiguous items=%s  [EDGE CASE]", flagged)
         return "rejected"
     skipped = not guard_result
-    reason = "guard was skipped (short msg or last-turn clarify)" if skipped else "all items valid"
-    logger.info("ROUTE after_guard → extraction  WHY: %s", reason)
-    return "extraction"
+    reason = "screen skipped (affirmation / query / short msg)" if skipped else "all items valid"
+    logger.info("ROUTE after_screen → priority  WHY: %s", reason)
+    return "priority"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -543,61 +616,7 @@ def rejected_node(state: WorkflowState) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# extraction_node  — strict inventory extraction (runs after guard, before aria)
-# ─────────────────────────────────────────────────────────────────────────────
-
-async def extraction_node(state: WorkflowState) -> dict:
-    """
-    Run the Hotel Inventory Extraction AI on the worker's message.
-
-    Produces a strict structured extraction (ExtractionResult) before ARIA
-    so ARIA receives pre-validated items rather than raw text.  This separates
-    parsing accuracy from conversational response generation.
-
-    Skipped for non-inventory intents (query, analytics, deny, confirm) and
-    for very short messages, since those are confirmations or fragments —
-    extraction would be meaningless.
-    """
-    from agents.extraction_agent import extract_inventory
-
-    text = state["text"]
-    pre_classified_intent = state.get("pre_classified_intent") or "unknown"
-    is_affirmation = state.get("is_affirmation", False)
-
-    skip_intents = {"query", "analytics", "deny", "confirm"}
-    word_count = len(text.split())
-
-    skip = is_affirmation or pre_classified_intent in skip_intents or word_count <= 2
-    skip_reason = (
-        "affirmation" if is_affirmation
-        else f"intent={pre_classified_intent}" if pre_classified_intent in skip_intents
-        else "short_message" if word_count <= 2
-        else None
-    )
-
-    logger.info(
-        "NODE ──▶ extraction  text=%r  intent=%s  word_count=%d  skip=%s  reason=%s",
-        text[:80], pre_classified_intent, word_count, skip, skip_reason,
-    )
-
-    if skip:
-        logger.info("NODE ◀── extraction  SKIPPED")
-        return {"extraction_result": {}}
-
-    try:
-        extraction_result = await extract_inventory(text)
-    except Exception as exc:
-        logger.warning("extraction_node  [FALLBACK]  error=%s — skipping, ARIA sees raw text", exc)
-        extraction_result = {}
-
-    items = extraction_result.get("items", []) if extraction_result else []
-    logger.info("NODE ◀── extraction  items=%d", len(items))
-
-    return {"extraction_result": extraction_result}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# priority_node  — BM25 context pruning (between extraction and aria)
+# priority_node  — BM25 context pruning (between screen_extract and aria)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def priority_node(state: WorkflowState) -> dict:
@@ -709,6 +728,12 @@ async def aria_node(state: WorkflowState) -> dict:
                 f"  • {cname}: qty={qty}, unit={unit}, category={cat}, "
                 f"catalog={matched}, confidence={conf}, confirm={needs_confirm}"
             )
+            if ei.get("unit_corrected_from"):
+                line += (
+                    f"  [UNIT AUTO-CORRECTED: worker said '{ei['unit_corrected_from']}' "
+                    f"which is physically impossible for {cname} — RULE 1 applies: "
+                    f"use '{unit}', mention the correction, action='update', confirmed=true]"
+                )
             if errs:
                 line += f", errors={errs}"
             extraction_lines.append(line)
@@ -756,6 +781,20 @@ async def aria_node(state: WorkflowState) -> dict:
         worker_id, session_id, text[:80], pre_classified_intent, is_affirmation,
     )
 
+    # Short-circuit: total-value analytics questions are answered deterministically
+    # from Python-computed figures — the LLM never does arithmetic.
+    if not is_affirmation:
+        from services.analytics_fastpath import try_analytics_fastpath
+        fastpath_result = try_analytics_fastpath(
+            text, pre_classified_intent, state.get("inventory_summary")
+        )
+        if fastpath_result is not None:
+            logger.info(
+                "NODE ◀── aria  SHORT-CIRCUIT (analytics fastpath)  scope=%s  msg=%r",
+                fastpath_result.pop("_fastpath_scope", "?"), fastpath_result["message"][:100],
+            )
+            return {"aria_result": fastpath_result}
+
     # Short-circuit: worker confirmed a pending action → skip LLM, execute directly.
     # This prevents ARIA from re-asking its clarification question (unit switch, storage
     # warning, etc.) when the worker already said yes to proceed.
@@ -793,6 +832,10 @@ async def aria_node(state: WorkflowState) -> dict:
     session_digest = state.get("session_digest") or ""
     rejection_context = state.get("rejection_context") or ""
 
+    # Token streaming (ARIA_STREAMING=1): message-field deltas go to the SSE
+    # loop as 'chunk' events. emit_message_chunk is a no-op on the sync path.
+    from services.workflow_events import emit_message_chunk
+
     try:
         aria_result = await aria_process(
             text,
@@ -810,6 +853,7 @@ async def aria_node(state: WorkflowState) -> dict:
             extraction_context=extraction_context,
             session_digest=session_digest,
             rejection_context=rejection_context,
+            on_message_delta=emit_message_chunk,
         )
     except Exception as exc:
         err_type = (
@@ -956,7 +1000,16 @@ def validate_node(state: WorkflowState) -> dict:
     # SKIP when is_affirmation=True: the worker said "yes"/"yep"/"go ahead" to a
     # pending action that was already validated — the qty IS correct here, it came
     # from the legitimate pending, not from cross-item bleeding.
-    if action in ("confirm", "update") and items_list and not state.get("is_affirmation"):
+    #
+    # SKIP when a fragment-completion hint is active: the worker's own previous
+    # itemless message ("add 5 kg") supplied the qty, and the current turn names
+    # the item — that carryover is legitimate, not cross-item bleeding.
+    if (
+        action in ("confirm", "update")
+        and items_list
+        and not state.get("is_affirmation")
+        and not state.get("fragment_hint")
+    ):
         user_text = (state.get("text") or "").strip()
         user_has_digits = any(ch.isdigit() for ch in user_text)
         if not user_has_digits:
@@ -987,10 +1040,40 @@ def validate_node(state: WorkflowState) -> dict:
                 )
                 action = "clarify"
                 extra_flags.append("qty_bleed_blocked")
+                # Blank the bled quantities so the pending-store block below
+                # cannot save them — otherwise the next "yes" would execute a
+                # quantity this very message claims not to have.
+                for _it in items_list:
+                    _it["quantity"] = None
                 logger.warning(
                     "validate  QTY BLEED BLOCKED  items=%s  "
-                    "user_text=%r  aria_had_qty_from_history=True",
+                    "user_text=%r  aria_had_qty_from_history=True  qty_blanked=True",
                     item_names, user_text,
+                )
+
+    # ── Deterministic RULE 1 backstop: physically impossible units ─────────────
+    # screen_extract_node already corrects extraction items; this catches items
+    # ARIA produced without extraction help (fragments, history combines).
+    from utils.unit_converter import incompatible_unit_correction
+    for _it in items_list:
+        _corr = incompatible_unit_correction(
+            _it.get("item_name", ""), _it.get("category", ""), _it.get("unit") or ""
+        )
+        if _corr and _corr != _it.get("unit"):
+            _old_unit = _it.get("unit")
+            _it["unit"] = _corr
+            if "unit_changed" not in (data.get("flags") or []):
+                data.setdefault("flags", []).append("unit_changed")
+            extra_flags.append("unit_auto_corrected")
+            logger.warning(
+                "validate  UNIT AUTO-CORRECTED  [EDGE CASE]  item=%r  %s → %s",
+                _it.get("item_name"), _old_unit, _corr,
+            )
+            # Mention the correction if ARIA's message didn't already
+            if _corr.lower() not in message.lower():
+                message += (
+                    f"\n(Note: {_it.get('item_name')} can't be measured in "
+                    f"{_old_unit}, so I've used {_corr}.)"
                 )
 
     # ── Collect ALL deterministic warnings first, then apply once ──────────────

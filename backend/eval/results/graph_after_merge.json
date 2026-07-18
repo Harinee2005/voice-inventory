@@ -1,0 +1,795 @@
+{
+  "summary": {
+    "passed": 2,
+    "total": 10,
+    "avg_score": 0.4220462543991956
+  },
+  "results": [
+    {
+      "id": "analytics_workspace_total",
+      "description": "Total-value query returns the exact Python-computed workspace total",
+      "tags": [
+        "analytics",
+        "gate_b2",
+        "readonly"
+      ],
+      "passed": false,
+      "score": 0.0,
+      "turns": [
+        {
+          "text": "what is the total value of my inventory?",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "query_result",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "intent",
+              "passed": false,
+              "expected": "analytics|query",
+              "actual": "unknown",
+              "weight": 2
+            },
+            {
+              "name": "msg_contains:97.00",
+              "passed": false,
+              "expected": "97.00",
+              "actual": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 11718.382042003213,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "query_no_write",
+      "description": "Stock query answers from context and never mutates inventory",
+      "tags": [
+        "query",
+        "readonly"
+      ],
+      "passed": false,
+      "score": 0.6666666666666666,
+      "turns": [
+        {
+          "text": "how much milk do we have?",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "query_result",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "msg_contains:5",
+              "passed": false,
+              "expected": "5",
+              "actual": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+              "weight": 2
+            },
+            {
+              "name": "db:Milk.exists",
+              "passed": true,
+              "expected": "row present",
+              "actual": "present",
+              "weight": 3
+            },
+            {
+              "name": "db:Milk.qty",
+              "passed": true,
+              "expected": "5.0",
+              "actual": "5.0",
+              "weight": 3
+            },
+            {
+              "name": "db:Milk.unit",
+              "passed": true,
+              "expected": "litre",
+              "actual": "litre",
+              "weight": 2
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 12.170583009719849,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "low_confidence_clarify",
+      "description": "Unintelligible input short-circuits to a clarification question",
+      "tags": [
+        "clarify",
+        "readonly"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "umm the thing over there",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 6.790209008613601,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "guard_rejection_no_db_write",
+      "description": "Non-food item is rejected and never touches the DB",
+      "tags": [
+        "guard",
+        "readonly"
+      ],
+      "passed": true,
+      "score": 1.0,
+      "turns": [
+        {
+          "text": "Add 2 motorbikes to the inventory",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify|none",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:no_motorbike",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 5.273833012324758,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "add_confirm_affirm",
+      "description": "Add novel item \u2192 confirm + pending stored, no write; 'yes' \u2192 row written, pending cleared",
+      "tags": [
+        "happy_path",
+        "affirmation"
+      ],
+      "passed": false,
+      "score": 0.2777777777777778,
+      "turns": [
+        {
+          "text": "Add 5 kg of strawberries",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "intent",
+              "passed": false,
+              "expected": "add",
+              "actual": "unknown",
+              "weight": 2
+            },
+            {
+              "name": "db:no_strawberr",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 5.900707998080179,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "update",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:strawberries.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 4.135833994951099,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "qty_bleed_blocked",
+      "description": "After confirming basil 5 kg, bare 'add tamarind' must NOT inherit the 5",
+      "tags": [
+        "quantity_grounding"
+      ],
+      "passed": false,
+      "score": 0.35294117647058826,
+      "turns": [
+        {
+          "text": "Add 5 kg of basil",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.869709005812183,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "update",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:basil.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 3.601583986892365,
+          "error": null
+        },
+        {
+          "text": "add tamarind",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:no_tamarind",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 3.572375004296191,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "fragment_flow_combines",
+      "description": "'add 5 kg' \u2192 clarify; 'wheat' \u2192 combined confirm; 'yes' \u2192 5 kg wheat written",
+      "tags": [
+        "fragment"
+      ],
+      "passed": false,
+      "score": 0.38461538461538464,
+      "turns": [
+        {
+          "text": "add 5 kg",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": true,
+              "expected": "clarify",
+              "actual": "clarify",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 3.558334006811492,
+          "error": null
+        },
+        {
+          "text": "wheat",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.3618750021560118,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "db:wheat.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.237582990550436,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "deny_clears_pending",
+      "description": "Deny after a confirm clears the pending action and writes nothing; 'litres' must not trigger a typo question",
+      "tags": [
+        "denial",
+        "fuzzy_units"
+      ],
+      "passed": false,
+      "score": 0.38461538461538464,
+      "turns": [
+        {
+          "text": "Add 3 litres of orange juice",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.4073749993694946,
+          "error": null
+        },
+        {
+          "text": "no, cancel that",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "none",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:no_orange juice",
+              "passed": true,
+              "expected": "no rows",
+              "actual": "0 rows",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.046500001801178,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "unit_incompatible_rice_litres",
+      "description": "'5 litres of rice' must end up stored in kg (RULE 1 \u2192 deterministic in B3)",
+      "tags": [
+        "unit",
+        "gate_b3"
+      ],
+      "passed": false,
+      "score": 0.0,
+      "turns": [
+        {
+          "text": "Add 5 litres of rice",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "update|confirm",
+              "actual": "clarify",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 2.960625002742745,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "db:rice.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            }
+          ],
+          "elapsed_ms": 3.1848750077188015,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "multi_item_add",
+      "description": "Two items in one utterance \u2192 both captured, both written on confirm",
+      "tags": [
+        "multi_item"
+      ],
+      "passed": false,
+      "score": 0.15384615384615385,
+      "turns": [
+        {
+          "text": "Add 2 kg of onions and 3 bottles of olive oil",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "action",
+              "passed": false,
+              "expected": "confirm",
+              "actual": "clarify",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": false,
+              "expected": "pending stored",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 3.055334003875032,
+          "error": null
+        },
+        {
+          "text": "yes",
+          "response": {
+            "message": "I didn't quite catch that \u2014 did you want to add something, remove it, or check the stock?",
+            "action": "clarify",
+            "intent": "unknown",
+            "data": {
+              "items": [],
+              "confirmed": false,
+              "flags": [
+                "low_confidence_intent"
+              ]
+            },
+            "inventory_updated": false
+          },
+          "checks": [
+            {
+              "name": "db:onions.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:olive oil.exists",
+              "passed": false,
+              "expected": "row present",
+              "actual": "missing",
+              "weight": 3
+            },
+            {
+              "name": "db:pending",
+              "passed": true,
+              "expected": "no pending",
+              "actual": "absent",
+              "weight": 2
+            }
+          ],
+          "elapsed_ms": 2.9372910066740587,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

@@ -47,3 +47,15 @@ async def emit_workflow_progress(
         return
     logger.debug("WORKFLOW PROGRESS EMIT  request_id=%s  step=%s", request_id, step)
     await queue.put({"type": "progress", "step": step})
+
+
+async def emit_message_chunk(text: str) -> None:
+    """Push a chunk of ARIA's streamed message text to the SSE loop.
+
+    No-op when there is no registered queue (sync /api/chat path, eval runs) —
+    streaming is purely additive to the SSE contract.
+    """
+    queue = workflow_event_queue.get()
+    if queue is None or not text:
+        return
+    await queue.put({"type": "message_chunk", "text": text})

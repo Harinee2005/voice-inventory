@@ -1,7 +1,7 @@
 """
 Priority agent — context pruning via BM25 (fallback) or pgvector ANN (preferred).
 
-No LLM call. Runs between extraction_node and aria_node:
+No LLM call. Runs between screen_extract_node and aria_node:
   - Ranks conversation history turns against the current message
   - Keyword-filters inventory and item history to mentioned items
   - Strips unused lexicons from the user profile

@@ -25,6 +25,7 @@ class WorkflowState(TypedDict, total=False):
     # ── Context loaded in parallel ────────────────────────────────────────────
     # load_context_node writes these
     inventory_context: str
+    inventory_summary: Dict         # Python-computed totals for the analytics fast-path
     item_history_context: str
     conversation_history: List[Dict]
     pending_action: Optional[Dict]  # DB-persisted pending confirmation state

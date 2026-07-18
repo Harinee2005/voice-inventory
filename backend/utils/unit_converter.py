@@ -1,11 +1,9 @@
 FUZZY_UNIT_ALIASES = {
-    # Misspellings
+    # Misspellings — ONLY actual typos belong here. Valid spellings
+    # (litre/litres, kilo/kilos, carton…) live in UNIT_ALIASES and must
+    # never be flagged as fuzzy — workers use them constantly.
     "littles": "liters",
     "litters": "liters",
-    "litre": "liters",
-    "litres": "liters",
-    "kilo": "kg",
-    "kilos": "kg",
     "kilogramme": "kg",
     "kilogrammes": "kg",
     "grame": "g",
@@ -23,7 +21,6 @@ FUZZY_UNIT_ALIASES = {
     "bxs": "boxes",
     "pakkets": "packets",
     "packt": "packets",
-    "carton": "cartons",
     "mililiters": "ml",
     "mililit": "ml",
     "mls": "ml",
@@ -41,7 +38,6 @@ FUZZY_UNIT_ALIASES = {
     "peases": "pieces",
     "bottels": "bottles",
     "pakages": "packages",
-    "crates": "crates",  # already correct but include for normalization
 }
 
 UNIT_ALIASES = {
@@ -126,10 +122,81 @@ def get_unit_group(unit: str) -> str:
     return "packaging"
 
 
+# ── Physical-type classification for deterministic unit auto-correction ──────
+# Implements ARIA RULE 1 in code: a solid measured by volume (or a liquid
+# measured by weight) is physically impossible and is corrected without asking.
+# Packaging/count units (bottles, boxes, cases…) are business choices and are
+# NEVER overridden (RULE 10 — trust the worker's units).
+
+_LIQUID_KEYWORDS = {
+    "milk", "oil", "juice", "water", "sauce", "vinegar", "stock", "broth",
+    "cream", "syrup", "soda", "cola", "coke", "wine", "beer", "smoothie",
+    "milkshake", "lemonade", "ketchup", "mayonnaise", "dressing",
+}
+_COUNTABLE_KEYWORDS = {"egg", "eggs"}
+
+# Extraction-agent categories (lowercase) + ARIA categories (lowercased here)
+_SOLID_CATEGORIES = {
+    "vegetable", "fruit", "meat", "seafood", "grain", "spices", "bakery",
+    "vegetables", "dry goods", "produce",
+}
+_LIQUID_CATEGORIES = {"oil", "beverage", "beverages"}
+
+
+def classify_item_physical_type(item_name: str, category: str = "") -> str:
+    """Return "solid" | "liquid" | "countable" | "unknown".
+
+    Keyword match on the item name wins over the category (dairy contains both
+    liquid milk and solid cheese, so category alone is unreliable). When
+    neither keywords nor category give a confident answer, return "unknown" —
+    callers must never guess on unknown.
+    """
+    import re as _re
+    words = set(_re.findall(r"[a-z]+", (item_name or "").lower()))
+    if words & _COUNTABLE_KEYWORDS:
+        return "countable"
+    if words & _LIQUID_KEYWORDS:
+        return "liquid"
+    cat = (category or "").lower()
+    if cat in _LIQUID_CATEGORIES:
+        return "liquid"
+    if cat in _SOLID_CATEGORIES:
+        return "solid"
+    return "unknown"
+
+
+def incompatible_unit_correction(
+    item_name: str, category: str, unit: str
+) -> Optional[str]:
+    """Return the corrected unit when the given unit is physically impossible
+    for the item, else None.
+
+      solid  + volume unit  → "kg"
+      liquid + weight unit  → "litre"
+
+    Quantity is intentionally left untouched (matches ARIA RULE 1 behaviour).
+    Packaging/count units and unknown physical types always return None.
+    """
+    if not unit or unit == "UNKNOWN":
+        return None
+    group = get_unit_group(unit)
+    ptype = classify_item_physical_type(item_name, category)
+    if ptype == "solid" and group == "volume":
+        return "kg"
+    if ptype == "liquid" and group == "weight":
+        return "litre"
+    return None
+
+
 def fuzzy_match_unit(word: str) -> Optional[str]:
     """Return corrected unit only for ACTUAL typos in FUZZY_UNIT_ALIASES.
-    Valid aliases (kgs, liter, pcs…) return None — they are correct, not fuzzy."""
-    return FUZZY_UNIT_ALIASES.get(word.lower().strip())
+    Valid aliases (kgs, liter, litre, kilo, pcs…) return None — they are
+    correct, not fuzzy. UNIT_ALIASES always wins over the fuzzy dict so a
+    valid spelling can never be flagged as a typo."""
+    w = word.lower().strip()
+    if w in UNIT_ALIASES or w in UNIT_ALIASES.values():
+        return None
+    return FUZZY_UNIT_ALIASES.get(w)
 
 
 def extract_fuzzy_units(text: str) -> list:
