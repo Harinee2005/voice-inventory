@@ -54,7 +54,7 @@ class InventoryItem(Base):
     is_flagged = Column(Boolean, default=False)
     notes = Column(Text, nullable=True)
     count_date = Column(Date, default=date_type.today, nullable=False, index=True)
-    name_embedding = _vec_col(1536)
+    name_embedding = _vec_col(384)  # fastembed BAAI/bge-small-en-v1.5
 
 
 class ConversationMessage(Base):
@@ -66,7 +66,7 @@ class ConversationMessage(Base):
     content = Column(Text)
     timestamp = Column(DateTime, default=datetime.utcnow)
     action_taken = Column(String(100), nullable=True)
-    turn_embedding = _vec_col(1536)
+    turn_embedding = _vec_col(384)  # fastembed BAAI/bge-small-en-v1.5
 
 
 class ActivityLog(Base):
@@ -146,6 +146,6 @@ class WorkerMemory(Base):
     worker_id = Column(String(100), nullable=False, index=True)
     memory_text = Column(Text, nullable=False)
     memory_type = Column(String(50), default="general")  # tone/lexicon/pattern/personality
-    embedding = _vec_col(1536)
+    embedding = _vec_col(384)  # fastembed BAAI/bge-small-en-v1.5
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

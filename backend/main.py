@@ -48,9 +48,39 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
+def _ensure_vector_dim(conn, table: str, column: str, dims: int):
+    """Drop and recreate a pgvector column if its dimension doesn't match `dims`.
+
+    Embeddings from a different model aren't reinterpretable as another
+    model's vector space — when the embedding provider/model changes (as it
+    did when this table moved from OpenAI text-embedding-3-small to local
+    fastembed), existing vectors must be cleared and regenerated at the new
+    dimension rather than left mismatched (which pgvector would reject on
+    every insert/query).
+    """
+    # table is always an internal literal (never user input) — safe to inline.
+    # SQLAlchemy's named-bind-param substitution breaks when a param is
+    # immediately followed by a `::cast`, so the table name can't be bound.
+    row = conn.execute(text(
+        f"SELECT format_type(atttypid, atttypmod) AS coltype "
+        f"FROM pg_attribute "
+        f"WHERE attrelid = '{table}'::regclass AND attname = :column AND NOT attisdropped"
+    ), {"column": column}).fetchone()
+    if row is None:
+        return  # column doesn't exist yet — caller adds it fresh
+    if row.coltype != f"vector({dims})":
+        conn.execute(text(f"ALTER TABLE {table} DROP COLUMN {column}"))
+        conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} vector({dims})"))
+        logger.warning(
+            "MIGRATION  reset %s.%s  %s → vector(%d)  (embeddings cleared — embedding model changed)",
+            table, column, row.coltype, dims,
+        )
+
+
 def _run_migrations():
     """Automatically add any missing columns to existing tables."""
     from database import DATABASE_URL
+    from services.vector_memory_service import EMBEDDING_DIMS
     is_postgres = DATABASE_URL.startswith("postgresql")
 
     inspector = inspect(engine)
@@ -65,12 +95,14 @@ def _run_migrations():
             ("unit_price",    "FLOAT"),
         ]
         if is_postgres:
-            migrations.append(("name_embedding", "vector(1536)"))
+            migrations.append(("name_embedding", f"vector({EMBEDDING_DIMS})"))
         with engine.connect() as conn:
             for col, definition in migrations:
                 if col not in existing_cols:
                     conn.execute(text(f"ALTER TABLE inventory ADD COLUMN {col} {definition}"))
                     logger.info("MIGRATION  added column inventory.%s (%s)", col, definition)
+            if is_postgres and "name_embedding" in existing_cols:
+                _ensure_vector_dim(conn, "inventory", "name_embedding", EMBEDDING_DIMS)
             conn.commit()
 
     if "user_profiles" in existing_tables:
@@ -89,8 +121,10 @@ def _run_migrations():
         existing_cols = {c["name"] for c in inspector.get_columns("conversations")}
         with engine.connect() as conn:
             if "turn_embedding" not in existing_cols:
-                conn.execute(text("ALTER TABLE conversations ADD COLUMN turn_embedding vector(1536)"))
-                logger.info("MIGRATION  added column conversations.turn_embedding (vector(1536))")
+                conn.execute(text(f"ALTER TABLE conversations ADD COLUMN turn_embedding vector({EMBEDDING_DIMS})"))
+                logger.info("MIGRATION  added column conversations.turn_embedding (vector(%d))", EMBEDDING_DIMS)
+            else:
+                _ensure_vector_dim(conn, "conversations", "turn_embedding", EMBEDDING_DIMS)
             conn.commit()
 
     # Create new tables if they don't exist yet (idempotent — SQLAlchemy skips existing tables)
@@ -99,6 +133,11 @@ def _run_migrations():
         if model.__tablename__ not in existing_tables:
             model.__table__.create(bind=engine, checkfirst=True)
             logger.info("MIGRATION  created table %s", model.__tablename__)
+
+    if is_postgres:
+        with engine.connect() as conn:
+            _ensure_vector_dim(conn, "worker_memories", "embedding", EMBEDDING_DIMS)
+            conn.commit()
 
     # pgvector HNSW indexes — idempotent, only on PostgreSQL
     if is_postgres:

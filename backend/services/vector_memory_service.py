@@ -5,12 +5,16 @@ Stores behavioural insights, tone preferences, and lexicon observations
 per worker in a PostgreSQL table with HNSW vector index.
 
 Used by mem0_client.py when MEM0_API_KEY is absent (USE_LOCAL_VECTOR=True).
+
+Embeddings run locally via fastembed (ONNX runtime, no API key, no network
+call) — Claude has no embeddings endpoint, so this replaces the OpenAI
+text-embedding-3-small this table used to be sized for. The model weights
+(~130MB) download once on first use and are cached under ~/.cache/fastembed.
 """
 
 import asyncio
 import logging
 import math
-import os
 import time
 from functools import lru_cache
 from typing import Optional
@@ -20,28 +24,23 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDING_MODEL = "text-embedding-3-small"
-_EMBEDDING_DIMS = 1536
+_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_DIMS = 384
 _COSINE_DEDUP_THRESHOLD = 0.92
 _SEARCH_LIMIT = 20
 
 
-_sync_openai_client = None
-
-
-def _get_sync_client():
-    global _sync_openai_client
-    if _sync_openai_client is None:
-        from openai import OpenAI
-        _sync_openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY", ""))
-    return _sync_openai_client
+@lru_cache(maxsize=1)
+def _get_embedder():
+    from fastembed import TextEmbedding
+    return TextEmbedding(model_name=_EMBEDDING_MODEL)
 
 
 @lru_cache(maxsize=512)
 def _cached_embedding(text_key: str) -> list[float]:
     """Sync embedding call with LRU cache — avoids re-embedding identical strings."""
-    response = _get_sync_client().embeddings.create(model=_EMBEDDING_MODEL, input=text_key)
-    return response.data[0].embedding
+    vec = next(iter(_get_embedder().embed([text_key])))
+    return vec.tolist()
 
 
 async def get_embedding(text_input: str) -> list[float]:
