@@ -1,23 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Mic, MicOff, MapPin, Package, X } from 'lucide-react'
-import { useSpeechRecognition, useTTS } from '../hooks/useSpeechRecognition'
+import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { processVoiceText } from '../services/api'
-
-function buildGreeting(workerId, locationName, storageArea) {
-  const hour = new Date().getHours()
-  const time = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening'
-  const name = workerId?.replace(/_/g, ' ') || 'there'
-  const workspace = locationName && storageArea
-    ? ` You're counting inventory for ${storageArea} at ${locationName}.`
-    : ''
-  return `${time}, ${name}! I'm ARIA, your inventory assistant.${workspace} Go ahead and tell me what you're counting today.`
-}
 
 export default function VoiceAuditModal({ isOpen, onClose, workspace, sessionId, workerId, onInventoryUpdate, greetOnOpen = false }) {
   const [status, setStatus] = useState('idle')   // idle | greeting | listening | processing | result
   const [transcript, setTranscript] = useState('')
   const [result, setResult] = useState(null)
-  const { speak, isSpeaking } = useTTS()
 
   const handleResult = useCallback(async (text) => {
     if (!text?.trim()) return
@@ -31,13 +20,12 @@ export default function VoiceAuditModal({ isOpen, onClose, workspace, sessionId,
       )
       setResult(res)
       setStatus('result')
-      speak(res.message)
       if (res.inventory_updated) onInventoryUpdate?.()
     } catch {
       setResult({ message: 'Something went wrong. Please try again.', action: 'none' })
       setStatus('result')
     }
-  }, [sessionId, workerId, workspace, speak, onInventoryUpdate])
+  }, [sessionId, workerId, workspace, onInventoryUpdate])
 
   const { isListening, startListening, stopListening, isSupported } =
     useSpeechRecognition({ onResult: handleResult })
@@ -52,20 +40,13 @@ export default function VoiceAuditModal({ isOpen, onClose, workspace, sessionId,
     }
 
     if (greetOnOpen) {
-      // Speak greeting first, then start listening after speech ends
+      // No TTS anymore — show the greeting status briefly, then listen.
       setStatus('greeting')
-      const greeting = buildGreeting(workerId, workspace?.locationName, workspace?.storageAreaName)
-      speak(greeting)
-      // Poll for speech to finish, then start listening
-      const poll = setInterval(() => {
-        // isSpeaking might still be false at first tick — give a minimum delay
-      }, 200)
       const timer = setTimeout(() => {
-        clearInterval(poll)
         startListening()
         setStatus('listening')
-      }, 4000) // ~4s covers most greetings
-      return () => { clearInterval(poll); clearTimeout(timer) }
+      }, 1200)
+      return () => clearTimeout(timer)
     } else {
       const timer = setTimeout(() => {
         startListening()

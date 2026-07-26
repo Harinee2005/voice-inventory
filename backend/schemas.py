@@ -85,7 +85,6 @@ class VoiceProcessResponse(BaseModel):
     data: Dict[str, Any]
     inventory_updated: bool = False
     session_id: str
-    audio_base64: Optional[str] = None
 
 
 class ConversationMessageResponse(BaseModel):

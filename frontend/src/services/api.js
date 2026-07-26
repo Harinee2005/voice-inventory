@@ -52,12 +52,6 @@ export const streamVoiceText = async (text, sessionId, workerId = 'worker', stor
   }
 }
 
-export const transcribeAudio = (formData) =>
-  api.post('/voice/transcribe', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-
-export const synthesizeSpeech = (text) =>
-  api.post('/voice/synthesize', { text }, { responseType: 'blob' })
-
 export const getInventory = (params = {}) => api.get('/inventory/', { params })
 export const getAvailableDates = () => api.get('/inventory/dates/list')
 export const createInventoryItem = (data) => api.post('/inventory/', data)

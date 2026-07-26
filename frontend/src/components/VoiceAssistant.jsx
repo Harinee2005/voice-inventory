@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, Fragment } from 'react'
-import { Mic, MicOff, Send, RotateCcw, Volume2, VolumeX, MapPin, ChevronDown, ChevronUp, X, Activity } from 'lucide-react'
+import { Mic, MicOff, Send, RotateCcw, MapPin, ChevronDown, ChevronUp, X, Activity } from 'lucide-react'
 import WaveformAnimation from './WaveformAnimation'
-import { useSpeechRecognition, useTTS } from '../hooks/useSpeechRecognition'
+import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import { streamVoiceText, clearConversation } from '../services/api'
 
 // ── KV grid helpers (shared between inline + panel) ──────────────────────────
@@ -240,19 +240,16 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
   ])
   const [inputText, setInputText] = useState('')
   const [isProcessing, setIsProcessing] = useState(false)
-  const [muteVoice, setMuteVoice] = useState(false)
   const [thinkingSteps, setThinkingSteps] = useState([])
   const [streamingText, setStreamingText] = useState('')
   const [sidePanel, setSidePanel] = useState({ open: false, turnId: null, isLive: false })
   const thinkingTraceRef = useRef([])
   const pendingUserTextRef = useRef('')
   const messagesEndRef = useRef(null)
-  const { isSpeaking, speak, stopSpeaking } = useTTS()
 
   useEffect(() => {
     if (!shouldGreet) return
     const timer = setTimeout(() => {
-      speak(greeting)
       onGreeted?.()
     }, 800)
     return () => clearTimeout(timer)
@@ -340,7 +337,6 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
                 : prev
               )
               setTimeout(scrollToBottom, 100)
-              if (!muteVoice) speak(data.message)
               if (data.inventory_updated) onInventoryUpdate?.()
             } else if (eventType === 'error') {
               thinkingTraceRef.current = []
@@ -348,7 +344,6 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
               setThinkingSteps([])
               setStreamingText('')
               addMessage('assistant', data.message || 'Something went wrong.', 'none')
-              if (!muteVoice) speak(data.message || 'Something went wrong.')
             }
           }
         )
@@ -359,7 +354,6 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
         setThinkingSteps([])
         setStreamingText('')
         addMessage('assistant', errMsg, 'none')
-        if (!muteVoice) speak(errMsg)
       } finally {
         thinkingTraceRef.current = []
         pendingUserTextRef.current = ''
@@ -368,14 +362,13 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
         setStreamingText('')
       }
     },
-    [messages, sessionId, workerId, isProcessing, muteVoice, speak, onInventoryUpdate, storageArea, locationName]
+    [messages, sessionId, workerId, isProcessing, onInventoryUpdate, storageArea, locationName]
   )
 
   const { isListening, transcript, isSupported, startListening, stopListening } =
     useSpeechRecognition({ onResult: handleSend })
 
   const handleMicToggle = () => {
-    if (isSpeaking) stopSpeaking()
     if (isListening) stopListening()
     else startListening()
   }
@@ -385,9 +378,9 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
     setMessages([{ id: Date.now(), role: 'assistant', text: 'Conversation cleared. Ready for a fresh start!', action: 'none', flags: [], trace: [], userText: '' }])
   }
 
-  const isActive = isListening || isSpeaking || isProcessing
-  const statusLabel = isListening ? 'Listening...' : isProcessing ? 'Thinking...' : isSpeaking ? 'Speaking...' : 'Ready'
-  const statusColor = isListening ? 'bg-blue-500' : isProcessing ? 'bg-amber-400' : isSpeaking ? 'bg-purple-500' : 'bg-emerald-500'
+  const isActive = isListening || isProcessing
+  const statusLabel = isListening ? 'Listening...' : isProcessing ? 'Thinking...' : 'Ready'
+  const statusColor = isListening ? 'bg-blue-500' : isProcessing ? 'bg-amber-400' : 'bg-emerald-500'
 
   // liveSteps for the panel: current thinkingSteps while processing
   const liveStepsForPanel = thinkingSteps
@@ -403,7 +396,6 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${
               isListening ? 'bg-blue-50 text-blue-600 border border-blue-100'
               : isProcessing ? 'bg-amber-50 text-amber-600 border border-amber-100'
-              : isSpeaking ? 'bg-purple-50 text-purple-600 border border-purple-100'
               : 'bg-gray-50 text-gray-500 border border-gray-200'
             }`}>
               {statusLabel}
@@ -416,12 +408,6 @@ export default function VoiceAssistant({ sessionId, workerId, onInventoryUpdate,
             )}
           </div>
           <div className="flex items-center gap-1.5">
-            <button
-              onClick={() => setMuteVoice((v) => !v)}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
-            >
-              {muteVoice ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
-            </button>
             <button
               onClick={handleClear}
               className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-50 transition-colors"
