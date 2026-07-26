@@ -160,7 +160,7 @@ def _build_rich_status(node_name: str, delta: dict, state: dict | None = None) -
             "reasoning": _trunc(reasoning, 300) if reasoning else None,
             "input": {
                 "message": _trunc(text, 100),
-                "model": "gpt-4o-mini (temp=0)",
+                "model": "claude-haiku-4-5",
                 "history_turns_shown": min(len(conv), 6),
                 "pending_action": pending_summary or "none",
             },
@@ -330,7 +330,7 @@ def _build_rich_status(node_name: str, delta: dict, state: dict | None = None) -
             "step": "aria", "icon": "✨", "label": "ARIA",
             "detail": " · ".join(parts),
             "input": {
-                "model": "gpt-4o",
+                "model": "claude-haiku-4-5",
                 "inventory_context_shown": pri_inv_lines or None,
                 "history_turns_shown": len(pri_hist),
                 "context_focus": pri_focus,

@@ -1,15 +1,21 @@
 """
 ARIA agent — main inventory assistant.
 
-Replaces the CrewAI ARIA agent with a direct async OpenAI call.
-System prompt carries the static rules; user message carries the
-dynamic per-turn context (inventory state, history, workspace, etc.).
+Direct async Claude call. System prompt carries the static rules; user
+message carries the dynamic per-turn context (inventory state, history,
+workspace, etc.).
+
+Structured output is a forced, non-strict tool call (record_aria_response)
+validated via Pydantic afterward — not client.messages.parse() / strict tool
+use, both of which return a 400 "Schema is too complex" on ARIAResult's
+shape (nested items array, several enums). See clients/llm_client.py.
 
 When ARIA_STREAMING=1 and the caller supplies on_message_delta, the response
-is streamed and the "message" field's tokens are pushed to the callback as
-they arrive (message is ARIAResult's first field, so this starts within the
-first few output tokens). Any streaming failure falls back to the
-non-streaming call_llm path (retries + circuit breaker).
+is streamed via client.messages.stream() with the same forced tool call; the
+"message" field's tokens are pulled from input_json_delta fragments and
+pushed to the callback as they arrive (message is ARIAResult's first field,
+so this starts within the first few output tokens). Any streaming failure
+falls back to the non-streaming call_llm path (retries + circuit breaker).
 """
 
 import logging
@@ -18,11 +24,18 @@ import time
 from typing import Awaitable, Callable, Optional
 
 from agents.schemas import ARIAResult
-from clients.llm_client import get_llm_client, get_llm_model
+from clients.llm_client import build_tool_schema, extract_tool_input, get_llm_client, get_llm_model
 from logging_config import J
 from utils.llm_retry import call_llm
 
 logger = logging.getLogger(__name__)
+
+_TOOL_SCHEMA = build_tool_schema(ARIAResult)
+_TOOL_DEF = {
+    "name": "record_aria_response",
+    "description": "Record ARIA's structured response to the worker.",
+    "input_schema": _TOOL_SCHEMA,
+}
 
 
 def _streaming_enabled() -> bool:
@@ -365,29 +378,30 @@ async def _stream_aria(
     from utils.json_stream import MessageFieldExtractor
 
     extractor = MessageFieldExtractor()
-    async with get_llm_client().beta.chat.completions.stream(
+    async with get_llm_client().messages.stream(
         model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
-        ],
-        response_format=ARIAResult,
-        temperature=0.2,
+        max_tokens=2048,
+        system=_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": user_message}],
+        tools=[_TOOL_DEF],
+        tool_choice={"type": "tool", "name": "record_aria_response"},
     ) as stream:
         async for event in stream:
-            if event.type == "content.delta" and not extractor.done:
-                new_text = extractor.feed(event.delta)
+            # Forced tool use streams the JSON as input_json_delta fragments
+            # (delta.partial_json), not text_delta — MessageFieldExtractor
+            # only cares that it's receiving fragments of the same JSON text.
+            if event.type == "content_block_delta" and getattr(event.delta, "type", None) == "input_json_delta" and not extractor.done:
+                new_text = extractor.feed(event.delta.partial_json)
                 if new_text:
                     try:
                         await on_message_delta(new_text)
                     except Exception as cb_exc:  # UI delivery must never kill the turn
                         logger.warning("ARIA STREAM callback error: %s", cb_exc)
-        final = await stream.get_final_completion()
-    parsed = final.choices[0].message.parsed
-    if parsed is None:
-        content = final.choices[0].message.content or "{}"
-        parsed = ARIAResult.model_validate_json(content)
-    return parsed
+        final = await stream.get_final_message()
+    tool_input = extract_tool_input(final)
+    if tool_input is None:
+        raise ValueError("ARIA stream produced no tool_use block")
+    return ARIAResult.model_validate(tool_input)
 
 
 async def aria_process(
@@ -411,8 +425,8 @@ async def aria_process(
     """
     Process a worker's message through ARIA and return a dict matching ARIAResult schema.
 
-    Uses completions.parse() with Pydantic model so the LLM physically cannot produce
-    enum values outside the allowed Literal sets, and model validators enforce
+    Uses a forced (non-strict) tool call — see module docstring — validated
+    against the Pydantic model afterward. Model validators enforce
     cross-field consistency (e.g. action=update requires confirmed=True).
     """
     model = get_llm_model()
@@ -457,23 +471,19 @@ async def aria_process(
 
         if parsed is None:
             response = await call_llm(
-                lambda: get_llm_client().beta.chat.completions.parse(
+                lambda: get_llm_client().messages.create(
                     model=model,
-                    messages=[
-                        {"role": "system", "content": _SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    response_format=ARIAResult,
-                    temperature=0.2,
+                    max_tokens=2048,
+                    system=_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                    tools=[_TOOL_DEF],
+                    tool_choice={"type": "tool", "name": "record_aria_response"},
                 ),
                 label="aria",
                 model=model,
             )
-            parsed = response.choices[0].message.parsed
-            if parsed is None:
-                # Refusal or unparseable — fall back to content parsing
-                content = response.choices[0].message.content or "{}"
-                parsed = ARIAResult.model_validate_json(content)
+            tool_input = extract_tool_input(response)
+            parsed = ARIAResult.model_validate(tool_input) if tool_input else ARIAResult(message="Sorry, I couldn't process that.")
         result = parsed.model_dump()
         elapsed = (time.perf_counter() - t0) * 1000
         items = result.get("data", {}).get("items", [])

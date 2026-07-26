@@ -1,16 +1,17 @@
 """
-Timeout + retry wrapper for OpenAI API calls.
+Timeout + retry wrapper for Claude API calls.
 
-All four agents (aria, intent, extraction, guard) use `call_llm()` instead
-of calling `client.chat.completions.create()` directly. This gives us:
+All agents (aria, intent, screen_extract) use `call_llm()` instead of
+calling `client.messages.create()` / `client.messages.parse()` directly.
+This gives us:
   - per-attempt timeout via asyncio.wait_for
   - exponential backoff on 429 / transient network errors
   - circuit breaker integration (fails fast when API is repeatedly down)
-  - unified token-cost logging (prompt + completion tokens, estimated USD)
+  - unified token-cost logging (input + output tokens, estimated USD)
 
 Usage:
     response = await call_llm(
-        lambda: client.chat.completions.create(...),
+        lambda: client.messages.parse(...),
         timeout=25.0,
         label="aria",
     )
@@ -26,26 +27,21 @@ from utils.circuit_breaker import get_breaker, ServiceUnavailableError
 
 logger = logging.getLogger(__name__)
 
-# Local models (Ollama) are slower than the API, especially on cold load —
-# triple the default timeouts unless the env var pins one explicitly.
-_TIMEOUT_SCALE = 3.0 if os.getenv("LLM_PROVIDER", "openai").strip().lower() == "ollama" else 1.0
-
 # Default per-attempt timeout by agent label
 _DEFAULT_TIMEOUTS: dict[str, float] = {
-    "aria":           float(os.getenv("ARIA_TIMEOUT",           str(25 * _TIMEOUT_SCALE))),
-    "intent":         float(os.getenv("INTENT_TIMEOUT",         str(10 * _TIMEOUT_SCALE))),
-    "screen_extract": float(os.getenv("SCREEN_EXTRACT_TIMEOUT", str(15 * _TIMEOUT_SCALE))),
-    "tts":            float(os.getenv("TTS_TIMEOUT",            "20")),
+    "aria":           float(os.getenv("ARIA_TIMEOUT",           "25")),
+    "intent":         float(os.getenv("INTENT_TIMEOUT",         "10")),
+    "screen_extract": float(os.getenv("SCREEN_EXTRACT_TIMEOUT", "15")),
 }
-_FALLBACK_TIMEOUT = 25.0 * _TIMEOUT_SCALE
+_FALLBACK_TIMEOUT = 25.0
 _MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 _BACKOFF_BASE = 1.5  # seconds: 1.5s, 2.25s, 3.375s
 
 # Token cost rates (per 1 000 tokens, USD)
-_PROMPT_RATE     = float(os.getenv("GPT4O_PROMPT_RATE",      "0.0025"))  # gpt-4o input
-_COMPLETION_RATE = float(os.getenv("GPT4O_COMPLETION_RATE",  "0.010"))   # gpt-4o output
-_MINI_PROMPT_RATE     = float(os.getenv("GPT4O_MINI_PROMPT_RATE",     "0.000150"))
-_MINI_COMPLETION_RATE = float(os.getenv("GPT4O_MINI_COMPLETION_RATE", "0.000600"))
+_OPUS_PROMPT_RATE      = float(os.getenv("CLAUDE_OPUS_PROMPT_RATE",      "0.005"))   # claude-opus-4-8 input
+_OPUS_COMPLETION_RATE  = float(os.getenv("CLAUDE_OPUS_COMPLETION_RATE",  "0.025"))   # claude-opus-4-8 output
+_HAIKU_PROMPT_RATE     = float(os.getenv("CLAUDE_HAIKU_PROMPT_RATE",     "0.001"))   # claude-haiku-4-5 input
+_HAIKU_COMPLETION_RATE = float(os.getenv("CLAUDE_HAIKU_COMPLETION_RATE", "0.005"))   # claude-haiku-4-5 output
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -63,15 +59,15 @@ def _is_retryable(exc: Exception) -> bool:
 
 
 def _log_tokens(response: Any, label: str, model: str | None = None) -> None:
-    """Log token usage and estimated cost from an OpenAI response."""
+    """Log token usage and estimated cost from a Claude response."""
     usage = getattr(response, "usage", None)
     if not usage:
         return
-    prompt_tok     = getattr(usage, "prompt_tokens",     0)
-    completion_tok = getattr(usage, "completion_tokens", 0)
-    is_mini = "mini" in (model or "").lower()
-    p_rate = _MINI_PROMPT_RATE     if is_mini else _PROMPT_RATE
-    c_rate = _MINI_COMPLETION_RATE if is_mini else _COMPLETION_RATE
+    prompt_tok     = getattr(usage, "input_tokens",  0)
+    completion_tok = getattr(usage, "output_tokens", 0)
+    is_haiku = "haiku" in (model or "").lower()
+    p_rate = _HAIKU_PROMPT_RATE     if is_haiku else _OPUS_PROMPT_RATE
+    c_rate = _HAIKU_COMPLETION_RATE if is_haiku else _OPUS_COMPLETION_RATE
     cost   = (prompt_tok * p_rate + completion_tok * c_rate) / 1_000
     logger.info(
         "TOKENS  agent=%s  model=%s  prompt=%d  completion=%d  cost=$%.5f",
@@ -87,7 +83,7 @@ async def call_llm(
     model: str | None = None,
 ) -> Any:
     """
-    Call an OpenAI coroutine with timeout, exponential-backoff retry, and circuit breaker.
+    Call a Claude coroutine with timeout, exponential-backoff retry, and circuit breaker.
 
     Args:
         coro_fn : zero-argument callable returning the coroutine (called fresh on each attempt)
@@ -96,7 +92,7 @@ async def call_llm(
         model   : model id for cost calculation (optional; read from response if omitted)
 
     Returns:
-        The successful OpenAI response object.
+        The successful Claude response object.
 
     Raises:
         ServiceUnavailableError : circuit breaker is open

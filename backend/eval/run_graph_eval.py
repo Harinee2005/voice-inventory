@@ -462,7 +462,7 @@ async def main() -> int:
         print(f"  ARIA Graph Eval  ·  {len(scenarios)} scenarios  ·  sqlite={_DB_FILE.name}")
         results: list[ScenarioResult] = []
         # Sequential on purpose: turns within a scenario are stateful, and
-        # serial execution keeps us clear of OpenAI rate limits / the breaker.
+        # serial execution keeps us clear of Claude API rate limits / the breaker.
         for sc in scenarios:
             print(f"  ▶ {sc.id} ...", flush=True)
             results.append(await run_scenario(svc, sc))

@@ -1193,7 +1193,7 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
             "reasoning": _trunc(reasoning, 300) if reasoning else None,
             "input": {
                 "message": _trunc(text, 100),
-                "model": "gpt-4o-mini (temp=0)",
+                "model": "claude-haiku-4-5",
                 "history_turns_shown": min(len(conv), 6),
                 "pending_action": pending_summary or "none",
             },
@@ -1338,7 +1338,7 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
         return {
             "icon": icon, "label": label, "detail": " · ".join(parts),
             "input": {
-                "model": "gpt-4o",
+                "model": "claude-haiku-4-5",
                 "inventory_context_shown": pri_inv_lines or None,
                 "history_turns_shown": len(pri_hist),
                 "context_focus": pri_focus,
@@ -1459,7 +1459,7 @@ async def process_message(
           ↓ (fan-in)
         preprocess_node                        ← fuzzy units, affirmation, fragment hints
           ↓
-        intent_node                            ← gpt-4o-mini classifier
+        intent_node                            ← claude-haiku-4-5 classifier
           ↓ (conditional)
         ├── clarify_node → END
         └── screen_extract_node                ← merged guard+extraction (one LLM call)

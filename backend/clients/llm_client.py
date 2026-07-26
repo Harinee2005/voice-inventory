@@ -1,52 +1,52 @@
 """
-Shared LLM client — provider-switchable via env.
-
-    LLM_PROVIDER=openai  (default) → api.openai.com, gpt-4o family
-    LLM_PROVIDER=ollama            → local Ollama's OpenAI-compatible endpoint
+Shared LLM client — Anthropic Claude only.
 
 All agents import get_llm_client() / get_llm_model() from here, so the
-provider, API key, and models are configured in one place. Ollama model
-defaults come from OLLAMA_* env vars — a stale MODEL=gpt-4o in .env can
-never leak into an Ollama request.
+API key and models are configured in one place.
 
-Note: only the chat agents switch providers. Embeddings
-(vector_memory_service) and speech (speech_service) stay on OpenAI —
-pgvector tables are sized for text-embedding-3-small (1536 dims) and
-Ollama has no Whisper/TTS equivalent; both degrade gracefully without quota.
+    MODEL          — main conversational model (ARIA), default claude-haiku-4-5
+    INTENT_MODEL    — cheap/fast intent classifier, default claude-haiku-4-5
+    SCREEN_MODEL   — cheap/fast screen+extract, default claude-haiku-4-5
+
+Every role defaults to claude-haiku-4-5 (lowest-cost Claude model) — set
+MODEL to something higher-tier (e.g. claude-opus-4-8) if ARIA's response
+quality needs to go up later.
+
+Sampling params (temperature/top_p/top_k) are not exposed here — Claude
+Opus 4.8 rejects non-default values, so every call site relies on the
+model's default behaviour instead.
+
+Structured output: prefer client.messages.parse() (grammar-constrained
+JSON-schema decoding) for flat/simple schemas — see intent_agent.py. It
+fails with a 400 "Schema is too complex" on schemas shaped like
+ScreenedExtractionResult / ARIAResult (an array of objects each carrying
+several large-cardinality enums) — same wall hits strict tool use
+(strict=True). screen_extract_agent.py and aria_agent.py use
+build_tool_schema() / extract_tool_input() below instead: a forced,
+non-strict tool call, validated client-side via Pydantic afterward. No
+complexity ceiling, same practical reliability.
 """
 
+import json
 import os
+from typing import Any, Optional
 
+from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
-from openai import AsyncOpenAI
 
 load_dotenv()  # idempotent — protects scripts that import us before database.py
 
-_client: AsyncOpenAI | None = None
+_client: AsyncAnthropic | None = None
 
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai").strip().lower()
-
-if LLM_PROVIDER == "ollama":
-    _BASE_URL: str | None = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-    _API_KEY = "ollama"  # SDK requires a value; Ollama ignores it
-    _OLLAMA_DEFAULT = os.getenv("OLLAMA_MODEL", "qwen2.5")
-    DEFAULT_MODEL = os.getenv("OLLAMA_MAIN_MODEL", _OLLAMA_DEFAULT)
-    INTENT_MODEL = os.getenv("OLLAMA_INTENT_MODEL", _OLLAMA_DEFAULT)
-    SCREEN_MODEL = os.getenv("OLLAMA_SCREEN_MODEL", _OLLAMA_DEFAULT)
-else:
-    _BASE_URL = None  # SDK default → api.openai.com
-    _API_KEY = os.getenv("OPENAI_API_KEY", "")
-    DEFAULT_MODEL = os.getenv("MODEL", "gpt-4o")
-    INTENT_MODEL = os.getenv("INTENT_MODEL", "gpt-4o-mini")
-    # Screening + extraction is a structured-parsing task — mini handles it well.
-    # Rollback to gpt-4o is a single env var: SCREEN_MODEL=gpt-4o
-    SCREEN_MODEL = os.getenv("SCREEN_MODEL", "gpt-4o-mini")
+DEFAULT_MODEL = os.getenv("MODEL", "claude-haiku-4-5")
+INTENT_MODEL  = os.getenv("INTENT_MODEL", "claude-haiku-4-5")
+SCREEN_MODEL  = os.getenv("SCREEN_MODEL", "claude-haiku-4-5")
 
 
-def get_llm_client() -> AsyncOpenAI:
+def get_llm_client() -> AsyncAnthropic:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(api_key=_API_KEY, base_url=_BASE_URL)
+        _client = AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
     return _client
 
 
@@ -54,3 +54,36 @@ def get_llm_model(intent: bool = False, screen: bool = False) -> str:
     if screen:
         return SCREEN_MODEL
     return INTENT_MODEL if intent else DEFAULT_MODEL
+
+
+def build_tool_schema(response_model: type) -> dict:
+    """JSON schema for a Pydantic model, shaped for use as a tool's input_schema."""
+    schema = response_model.model_json_schema()
+    schema.pop("title", None)
+    return schema
+
+
+def extract_tool_input(response: Any) -> Optional[dict]:
+    """Pull the input dict off the first tool_use block in a Claude response.
+
+    Non-strict tool use occasionally serializes a nested array/object field
+    as a JSON string instead of a native value (observed on ScreenedExtractionResult
+    and ARIAResult's `items` field) — decode any top-level string field that
+    looks like embedded JSON before returning, so Pydantic validation sees
+    the native type it expects.
+    """
+    tool_input = None
+    for block in response.content:
+        if block.type == "tool_use":
+            tool_input = block.input
+            break
+    if tool_input is None:
+        return None
+    fixed = dict(tool_input)
+    for key, value in fixed.items():
+        if isinstance(value, str) and value.strip()[:1] in ("[", "{"):
+            try:
+                fixed[key] = json.loads(value)
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return fixed

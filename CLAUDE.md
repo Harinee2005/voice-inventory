@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-ARIA (Automated Restaurant Inventory Assistant) — a voice-first conversational AI for hotel/restaurant inventory management. Workers speak or type commands; ARIA understands intent, confirms before writing, and persists changes to a PostgreSQL/SQLite database. It uses OpenAI for LLM calls and Mem0 for cross-session worker memory.
+ARIA (Automated Restaurant Inventory Assistant) — a conversational AI for hotel/restaurant inventory management. Workers type commands; ARIA understands intent, confirms before writing, and persists changes to a PostgreSQL/SQLite database. It uses Claude (Anthropic) for all LLM calls, a local embedding model (fastembed) for semantic memory/retrieval, and Mem0 (optional) for cross-session worker memory.
+
+Speech (voice input/TTS) has been removed — Claude has no speech API, so this is now a text-first assistant. The `/api/voice/process` and `/api/voice/stream` endpoints remain (they're text endpoints despite the router name); `/transcribe` and `/synthesize` are gone.
 
 ---
 
@@ -39,7 +41,7 @@ source venv/bin/activate
 # 1. Prompt eval — 29 cases against aria_process() in isolation, synthetic context
 python -m eval.run_eval --output eval/results/latest.json
 #    Filters: --tags happy_path fragment | --ids simple_add
-#    Keep --concurrency at the default 2 — 5 parallel gpt-4o calls hit the
+#    Keep --concurrency at the default 2 — 5 parallel Claude API calls hit the
 #    tokens-per-minute limit, trip the circuit breaker, and cascade ERRORs.
 
 # 2. Graph eval — multi-turn scenarios through ChatService.handle() against a
@@ -58,15 +60,17 @@ the RULE 1 flake now fixed deterministically) and `eval/results/graph_baseline.j
 
 | Variable | Purpose |
 |---|---|
-| `OPENAI_API_KEY` | Required. All LLM calls use OpenAI. |
+| `ANTHROPIC_API_KEY` | Required. All LLM calls use Claude (Anthropic). |
 | `WORKER_ID` | Worker identifier injected into every chat turn. |
-| `MODEL` | Main model (default `gpt-4o`). |
-| `INTENT_MODEL` | Intent classifier model (default `gpt-4o-mini`). |
+| `MODEL` | Main ARIA model (default `claude-haiku-4-5`). |
+| `INTENT_MODEL` | Intent classifier model (default `claude-haiku-4-5`). |
 | `DATABASE_URL` | PostgreSQL (`postgresql://...`) or omit for SQLite. |
 | `MEM0_API_KEY` | Optional. Enables long-term worker memory via Mem0 cloud. If absent, falls back to local pgvector (`vector_memory_service.py`). |
 | `INTENT_CONFIDENCE_THRESHOLD` | Confidence floor for intent routing (default `0.65`). Below this → `clarify_node`. |
-| `SCREEN_MODEL` | Model for the merged screen+extract call (default `gpt-4o-mini`). Set to `gpt-4o` to roll back the downgrade. |
-| `ARIA_STREAMING` | Set `1` to stream ARIA's message token-by-token as SSE `chunk` events (default off). |
+| `SCREEN_MODEL` | Model for the merged screen+extract call (default `claude-haiku-4-5`). |
+| `ARIA_STREAMING` | Set `1` to stream ARIA's message token-by-token as SSE `chunk` events (default off). Implemented via a forced tool-use stream, reading `message` field text out of `input_json_delta` fragments (Claude has no structured-parse streaming helper). |
+
+No embeddings or speech env vars are needed: embeddings run locally via `fastembed` (no API key, weights cached on first use), and speech (STT/TTS) has been removed — Claude has no equivalent API.
 
 ---
 
@@ -89,15 +93,15 @@ START
         ↓ (fan-in)
     preprocess_node       (sync: fuzzy unit detection, fragment hints, affirmation check)
         ↓
-    intent_node           (gpt-4o-mini, temp=0 — returns IntentResult with confidence)
+    intent_node           (claude-haiku-4-5 — returns IntentResult with confidence)
         ↓
    ┌────┴─────┐
-clarify_node  screen_extract_node  (confidence < 0.65 → clarify; else ONE gpt-4o-mini call
-    ↓              ↓                that merges food screening + strict item extraction,
+clarify_node  screen_extract_node  (confidence < 0.65 → clarify; else ONE claude-haiku-4-5
+    ↓              ↓                call that merges food screening + strict item extraction,
    END      ┌──────┴──────┐         and deterministically corrects impossible units)
         rejected_node  priority_node  (no LLM — BM25/pgvector prunes context)
             ↓                ↓
-           END           aria_node    (gpt-4o — conversational response + ARIAResult.
+           END           aria_node    (claude-haiku-4-5 — conversational response + ARIAResult.
                              ↓         Short-circuits WITHOUT an LLM call for:
                              ↓         affirmations, and total-value analytics questions
                              ↓         answered from Python-computed figures)
@@ -112,7 +116,7 @@ clarify_node  screen_extract_node  (confidence < 0.65 → clarify; else ONE gpt-
                             END
 ```
 
-Happy-path LLM calls per turn: **3** (intent mini → screen_extract mini → ARIA gpt-4o).
+Happy-path LLM calls per turn: **3** (intent claude-haiku-4-5 → screen_extract claude-haiku-4-5 → ARIA claude-haiku-4-5).
 Analytics totals and affirmations skip ARIA entirely.
 
 ### Key files
@@ -124,17 +128,17 @@ Analytics totals and affirmations skip ARIA entirely.
 | `backend/workflow/state.py` | `WorkflowState` TypedDict — all fields nodes can read/write. |
 | `backend/agents/aria_agent.py` | ARIA's system prompt (10 explicit rules) + `aria_process()`. |
 | `backend/agents/intent_agent.py` | Intent classifier (cheap, dedicated, fast path). |
-| `backend/agents/screen_extract_agent.py` | ONE gpt-4o-mini call merging food screening (former guard) + strict item extraction. Uses `completions.parse()` with `ScreenedExtractionResult`. |
+| `backend/agents/screen_extract_agent.py` | ONE claude-haiku-4-5 call merging food screening (former guard) + strict item extraction. Uses a forced tool call (`ScreenedExtractionResult`'s schema hits Claude's strict-decoding complexity ceiling — see `clients/llm_client.py`), validated via Pydantic. |
 | `backend/agents/priority_agent.py` | Context pruner between screen_extract and ARIA — uses BM25 (SQLite) or pgvector ANN (Postgres) to rank and trim conversation history and inventory context. No LLM call. |
 | `backend/agents/schemas.py` | Pydantic schemas for all LLM outputs (`ARIAResult`, `IntentResult`, `ScreenedExtractionResult`). |
 | `backend/services/analytics_fastpath.py` | Deterministic total-value answers from Python-computed figures — LLM never does arithmetic. Short-circuit at the top of `aria_node`. |
 | `backend/utils/json_stream.py` | `MessageFieldExtractor` — incremental extraction of the streamed `message` field for token streaming (`ARIA_STREAMING=1`). |
 | `backend/services/chat_service.py` | SSE streaming + sync entry points; emits a `TURN SUMMARY` log block per turn. |
 | `backend/services/ai_service.py` | DB helpers: inventory context builder, pending actions store, validation utils. |
-| `backend/services/vector_memory_service.py` | Local pgvector replacement for Mem0 — stores per-worker behavioural insights with HNSW index; activated when `MEM0_API_KEY` is absent. |
-| `backend/clients/llm_client.py` | Shared `AsyncOpenAI` singleton; reads `MODEL` / `INTENT_MODEL` env vars. |
+| `backend/services/vector_memory_service.py` | Local pgvector replacement for Mem0 — stores per-worker behavioural insights with HNSW index; activated when `MEM0_API_KEY` is absent. Embeddings generated locally via `fastembed` (`BAAI/bge-small-en-v1.5`, 384 dims) — no API key, no network call. |
+| `backend/clients/llm_client.py` | Shared `AsyncAnthropic` singleton; reads `MODEL` / `INTENT_MODEL` / `SCREEN_MODEL` env vars. |
 | `backend/clients/mem0_client.py` | Mem0 async wrappers; routes to `vector_memory_service` when `MEM0_API_KEY` is absent. |
-| `backend/utils/circuit_breaker.py` | Three-state circuit breaker (closed/open/half-open) wrapping all OpenAI calls. Opens after 3 consecutive failures; probes after 60 s. |
+| `backend/utils/circuit_breaker.py` | Three-state circuit breaker (closed/open/half-open) wrapping all Claude API calls. Opens after 3 consecutive failures; probes after 60 s. |
 | `backend/utils/llm_retry.py` | `call_llm()` helper used by all agents — exponential backoff + circuit breaker integration. |
 | `backend/routers/chat.py` | `/api/chat`, `/api/chat/stream`, `/api/memory` endpoints. |
 | `backend/main.py` | FastAPI app, WebSocket broadcast manager, auto-migration on startup. |

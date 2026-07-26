@@ -79,18 +79,17 @@ async def maybe_compress_session(session_id: str, db: Session) -> None:
     try:
         from utils.llm_retry import call_llm
         from clients.llm_client import get_llm_model
-        mini_model = os.getenv("INTENT_MODEL", "gpt-4o-mini")
+        mini_model = get_llm_model(intent=True)
         response = await call_llm(
-            lambda: get_llm_client().chat.completions.create(
+            lambda: get_llm_client().messages.create(
                 model=mini_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0,
                 max_tokens=200,
+                messages=[{"role": "user", "content": prompt}],
             ),
             label="intent",
             model=mini_model,
         )
-        summary_text = response.choices[0].message.content.strip()
+        summary_text = response.content[0].text.strip() if response.content else ""
         db.add(SessionSummary(
             session_id=session_id,
             summary=summary_text,

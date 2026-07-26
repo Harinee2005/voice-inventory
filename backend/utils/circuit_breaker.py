@@ -1,5 +1,5 @@
 """
-Circuit breaker for OpenAI API calls.
+Circuit breaker for Claude API calls.
 
 States:
   closed   → normal operation, all calls go through
@@ -74,7 +74,7 @@ class CircuitBreaker:
         return False  # do not suppress the exception
 
 
-# Module-level singleton — one breaker for the OpenAI API
+# Module-level singleton — one breaker for the Claude API
 _breaker: CircuitBreaker | None = None
 
 

@@ -11,7 +11,7 @@ Graph topology:
       ↓                  ↓
       └──── preprocess ───┘   (fan-in)
                   ↓
-             intent_node          ← dedicated classifier (gpt-4o-mini, temp=0)
+             intent_node          ← dedicated classifier (claude-haiku-4-5)
                   ↓
          ┌────────┴────────┐
       clarify        screen_extract   (low-confidence intent → clarify)

@@ -5,9 +5,14 @@ Screen + Extract agent — one LLM call that replaces the former guard_agent
 Runs after intent_node, before priority/aria. Screening fields drive the
 rejected-path routing; extraction items are injected into ARIA's context.
 
-Uses beta.chat.completions.parse() with ScreenedExtractionResult so the model
-physically cannot emit categories/units/confidences outside the schema —
-which is also why this prompt needs no schema echo or enum lists.
+Forces a single tool call (record_extraction) whose input_schema mirrors
+ScreenedExtractionResult, then validates the tool call's input via Pydantic.
+Not grammar-constrained decoding (client.messages.parse() / strict tool use)
+— this schema's array-of-multi-enum-objects shape hits Claude's "Schema is
+too complex" ceiling there. Plain tool use has no such ceiling, and Claude
+follows the schema reliably in practice; validation still catches anything
+that slips through — which is also why this prompt needs no schema echo or
+enum lists.
 
 Architecture note: pure extraction — no conversation, no recommendations.
 Accuracy > completeness: missing data is acceptable, hallucinated data is not.
@@ -18,9 +23,11 @@ import time
 from typing import Any
 
 from agents.schemas import ScreenedExtractionResult
-from clients.llm_client import get_llm_client, get_llm_model
+from clients.llm_client import build_tool_schema, extract_tool_input, get_llm_client, get_llm_model
 
 logger = logging.getLogger(__name__)
+
+_TOOL_SCHEMA = build_tool_schema(ScreenedExtractionResult)
 
 
 _SYSTEM_PROMPT = """\
@@ -126,22 +133,23 @@ async def screen_and_extract(text: str) -> dict[str, Any]:
     try:
         from utils.llm_retry import call_llm
         response = await call_llm(
-            lambda: get_llm_client().beta.chat.completions.parse(
+            lambda: get_llm_client().messages.create(
                 model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f'Worker message: "{text}"'},
-                ],
-                response_format=ScreenedExtractionResult,
-                temperature=0,
+                max_tokens=2048,
+                system=_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": f'Worker message: "{text}"'}],
+                tools=[{
+                    "name": "record_extraction",
+                    "description": "Record the screened and extracted inventory items.",
+                    "input_schema": _TOOL_SCHEMA,
+                }],
+                tool_choice={"type": "tool", "name": "record_extraction"},
             ),
             label="screen_extract",
             model=model,
         )
-        parsed = response.choices[0].message.parsed
-        if parsed is None:
-            content = response.choices[0].message.content or "{}"
-            parsed = ScreenedExtractionResult.model_validate_json(content)
+        tool_input = extract_tool_input(response)
+        parsed = ScreenedExtractionResult.model_validate(tool_input) if tool_input else ScreenedExtractionResult()
         result = parsed.model_dump()
         elapsed = (time.perf_counter() - t0) * 1000
         items = result.get("items", [])

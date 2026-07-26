@@ -5,11 +5,11 @@ Architecture rationale:
   Asking one LLM call to simultaneously classify intent, parse entities,
   generate a response, and compute personality notes produces inconsistent
   intent labels because intent is a side-effect, not a primary output.
-  A cheap, focused gpt-4o-mini call with temperature=0 classifies intent
-  consistently, and injects it as a hard constraint into ARIA's prompt.
+  A cheap, focused claude-haiku-4-5 call classifies intent consistently,
+  and injects it as a hard constraint into ARIA's prompt.
 
 Key patterns:
-  - Strict JSON schema via completions.parse() + IntentResult Pydantic model
+  - Strict JSON schema via messages.parse() + IntentResult Pydantic model
     → LLM cannot produce "add_item" instead of "add"
   - Chain-of-thought via the `reasoning` field before the label
   - Closed-world assumption: exactly 9 allowed intents, no others
@@ -212,21 +212,20 @@ async def classify_intent(
     try:
         from utils.llm_retry import call_llm
         response = await call_llm(
-            lambda: get_llm_client().chat.completions.create(
+            lambda: get_llm_client().messages.parse(
                 model=model,
-                messages=[
-                    {"role": "system", "content": _build_system_prompt(_CONFIDENCE_THRESHOLD)},
-                    {"role": "user",   "content": user_msg},
-                ],
-                response_format={"type": "json_object"},
-                temperature=0,
                 max_tokens=400,
+                system=_build_system_prompt(_CONFIDENCE_THRESHOLD),
+                messages=[{"role": "user", "content": user_msg}],
+                output_format=IntentResult,
             ),
             label="intent",
             model=model,
         )
-        content = response.choices[0].message.content
-        parsed = IntentResult.model_validate_json(content)
+        parsed = response.parsed_output
+        if parsed is None:
+            content = response.content[0].text if response.content else "{}"
+            parsed = IntentResult.model_validate_json(content)
         result = parsed.model_dump()
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info(

@@ -58,8 +58,9 @@ _DATE = "%Y-%m-%d %H:%M:%S"
 _QUIET = {
     "httpx":               logging.WARNING,
     "httpcore":            logging.WARNING,
-    "openai":              logging.WARNING,
-    "openai._base_client": logging.WARNING,
+    "anthropic":           logging.WARNING,
+    "anthropic._base_client": logging.WARNING,
+    "fastembed":           logging.WARNING,
     "uvicorn.access":      logging.WARNING,
     "uvicorn.error":       logging.INFO,
     "sqlalchemy.engine":   logging.WARNING,
