@@ -309,6 +309,16 @@ Return ONLY raw JSON. No markdown, no code fences:
 Flag values: unit_mismatch | suspicious_quantity | conflict | incomplete | expiry_warning | not_relevant | unit_changed | storage_warning\
 """
 
+# cache_control on the last (only) system block also caches the tools array
+# above it (render order is tools → system → messages). At ~5.3K tokens
+# combined this clears Haiku 4.5's 4096-token cacheable minimum, so this one
+# actually cuts real cost on every turn after the first in a session.
+_SYSTEM_BLOCKS = [{
+    "type": "text",
+    "text": _SYSTEM_PROMPT,
+    "cache_control": {"type": "ephemeral"},
+}]
+
 
 def _build_user_message(
     text: str,
@@ -381,7 +391,7 @@ async def _stream_aria(
     async with get_llm_client().messages.stream(
         model=model,
         max_tokens=2048,
-        system=_SYSTEM_PROMPT,
+        system=_SYSTEM_BLOCKS,
         messages=[{"role": "user", "content": user_message}],
         tools=[_TOOL_DEF],
         tool_choice={"type": "tool", "name": "record_aria_response"},
@@ -474,7 +484,7 @@ async def aria_process(
                 lambda: get_llm_client().messages.create(
                     model=model,
                     max_tokens=2048,
-                    system=_SYSTEM_PROMPT,
+                    system=_SYSTEM_BLOCKS,
                     messages=[{"role": "user", "content": user_message}],
                     tools=[_TOOL_DEF],
                     tool_choice={"type": "tool", "name": "record_aria_response"},

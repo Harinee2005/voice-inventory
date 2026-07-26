@@ -215,7 +215,15 @@ async def classify_intent(
             lambda: get_llm_client().messages.parse(
                 model=model,
                 max_tokens=400,
-                system=_build_system_prompt(_CONFIDENCE_THRESHOLD),
+                # cache_control: the system prompt is identical on every call.
+                # Below Haiku 4.5's 4096-token cacheable minimum today (~2.6K
+                # tokens) so this is currently a no-op — inert, not harmful —
+                # but starts paying off automatically if the prompt grows.
+                system=[{
+                    "type": "text",
+                    "text": _build_system_prompt(_CONFIDENCE_THRESHOLD),
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": user_msg}],
                 output_format=IntentResult,
             ),

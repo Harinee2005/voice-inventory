@@ -136,7 +136,15 @@ async def screen_and_extract(text: str) -> dict[str, Any]:
             lambda: get_llm_client().messages.create(
                 model=model,
                 max_tokens=2048,
-                system=_SYSTEM_PROMPT,
+                # cache_control on the system block also caches the tools
+                # array above it (render order is tools → system → messages).
+                # Below Haiku 4.5's 4096-token minimum today (~2.6K tokens
+                # combined) — inert until this prompt grows past that.
+                system=[{
+                    "type": "text",
+                    "text": _SYSTEM_PROMPT,
+                    "cache_control": {"type": "ephemeral"},
+                }],
                 messages=[{"role": "user", "content": f'Worker message: "{text}"'}],
                 tools=[{
                     "name": "record_extraction",
