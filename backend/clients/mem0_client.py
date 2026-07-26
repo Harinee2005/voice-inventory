@@ -123,11 +123,11 @@ async def add_user_memory(content: str, worker_id: str, metadata: Optional[dict]
     if USE_LOCAL_VECTOR:
         if db is None:
             logger.warning("MEM0 add_user_memory: USE_LOCAL_VECTOR=True but db=None — skipping")
-            return {}
+            return {"written": False}
         from services.vector_memory_service import add_worker_memory
         memory_type = (metadata or {}).get("memory_type", "general")
-        await add_worker_memory(worker_id, content, memory_type, db, metadata)
-        return {}
+        written = await add_worker_memory(worker_id, content, memory_type, db, metadata)
+        return {"written": written}
 
     if not _enabled() or not (content or "").strip():
         logger.debug("MEM0 ADD SKIPPED  worker=%s  (disabled or empty content)", worker_id)

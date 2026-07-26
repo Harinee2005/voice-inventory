@@ -179,6 +179,7 @@ async def load_context_node(state: WorkflowState) -> dict:
         "pending_action": pending_action,
         "rejection_context": rejection_context,
         "session_digest": session_digest,
+        "used_db_history": not bool(client_history),
     }
 
 
@@ -287,7 +288,7 @@ def preprocess_node(state: WorkflowState) -> dict:
 
 async def intent_node(state: WorkflowState) -> dict:
     """
-    Classify the worker's intent with a focused gpt-4o-mini call (temp=0).
+    Classify the worker's intent with a focused claude-haiku-4-5 call (temp=0).
 
     Running a separate cheap classifier before ARIA ensures the intent label
     is a primary output, not a side-effect.  The result is injected into
@@ -659,6 +660,7 @@ def priority_node(state: WorkflowState) -> dict:
         user_profile_context=user_profile_context,
         db=state.get("db"),
         session_id=state.get("session_id", ""),
+        pending_action=state.get("pending_action"),
     )
 
     logger.info(
@@ -1408,16 +1410,27 @@ async def persist_memory_node(state: WorkflowState) -> dict:
     """
     Persist worker behavioural insights to Mem0 after each interaction.
 
-    Written as natural language statements so Mem0's semantic deduplication
-    can automatically update related memories on subsequent turns:
+    Written as natural language statements so Mem0's (or the local pgvector
+    fallback's) semantic deduplication can recognise repeat facts on
+    subsequent turns:
       - tone / communication preference (derived from emotion)
       - personality observations
       - custom vocabulary entries (lexicons)
       - item patterns (what the worker manages)
 
-    This is additive to the DB writes in execute_node — Mem0 becomes the
-    cross-session long-term memory while the DB keeps the authoritative
-    short-term inventory state.
+    Each statement is written as its OWN memory rather than joined into one
+    blob. Deduplication compares one memory's embedding against another's —
+    concatenating e.g. a stable tone statement with a per-turn item name
+    ("...manages {item}...") means the item changes every turn, so the
+    combined embedding never lands close enough to its own history to
+    dedupe, even though the tone half is identical every time. Verified live:
+    two independently-worded paraphrases of the same personality trait score
+    ~0.95 cosine similarity (above the 0.92 dedup threshold) when compared on
+    their own — splitting lets that comparison actually happen.
+
+    This is additive to the DB writes in execute_node — Mem0 (or the local
+    fallback) becomes the cross-session long-term memory while the DB keeps
+    the authoritative short-term inventory state.
     """
     worker_id = state["worker_id"]
     aria_result = state.get("aria_result") or {}
@@ -1429,7 +1442,9 @@ async def persist_memory_node(state: WorkflowState) -> dict:
     personality_note = (aria_result.get("personality_note") or "").strip()
     new_lexicons = aria_result.get("new_lexicons") or []
 
-    statements: list[str] = []
+    # (memory_type, text) — written as separate memories so each dedupes
+    # against its own kind, not diluted by whatever else changed this turn.
+    statements: list[tuple[str, str]] = []
 
     logger.info(
         "NODE ──▶ persist_memory  worker=%s  emotion=%s  action=%s  "
@@ -1441,21 +1456,27 @@ async def persist_memory_node(state: WorkflowState) -> dict:
 
     # Tone preference inferred from emotion
     if user_emotion in ("frustrated", "angry"):
-        statements.append(
-            f"Worker {worker_id} prefers formal communication when stressed."
-        )
+        statements.append((
+            "tone",
+            f"Worker {worker_id} prefers formal communication when stressed.",
+        ))
     elif user_emotion in ("happy", "excited"):
-        statements.append(
-            f"Worker {worker_id} is enthusiastic and responds well to upbeat tone."
-        )
+        statements.append((
+            "tone",
+            f"Worker {worker_id} is enthusiastic and responds well to upbeat tone.",
+        ))
     elif user_emotion == "neutral":
-        statements.append(
-            f"Worker {worker_id} prefers friendly, efficient communication."
-        )
+        statements.append((
+            "tone",
+            f"Worker {worker_id} prefers friendly, efficient communication.",
+        ))
 
     # Personality observation
     if personality_note:
-        statements.append(f"Personality observation about {worker_id}: {personality_note}")
+        statements.append((
+            "personality",
+            f"Personality observation about {worker_id}: {personality_note}",
+        ))
 
     # Custom lexicons
     for lex in new_lexicons:
@@ -1464,13 +1485,15 @@ async def persist_memory_node(state: WorkflowState) -> dict:
         word_type = lex.get("word_type", "custom")
         if original:
             if resolved:
-                statements.append(
-                    f"Worker {worker_id}'s vocabulary: '{original}' means '{resolved}' ({word_type})."
-                )
+                statements.append((
+                    "lexicon",
+                    f"Worker {worker_id}'s vocabulary: '{original}' means '{resolved}' ({word_type}).",
+                ))
             else:
-                statements.append(
-                    f"Worker {worker_id} uses the term '{original}' ({word_type})."
-                )
+                statements.append((
+                    "lexicon",
+                    f"Worker {worker_id} uses the term '{original}' ({word_type}).",
+                ))
 
     # Item management patterns (recorded when inventory is actually updated)
     if action in ("update", "confirm"):
@@ -1480,16 +1503,20 @@ async def persist_memory_node(state: WorkflowState) -> dict:
         for item in items_list[:2]:  # cap at 2 per turn to keep memory concise
             item_name = (item.get("item_name") or "").strip()
             if item_name:
-                statements.append(
-                    f"Worker {worker_id} manages {item_name} inventory in {storage_area}."
-                )
+                statements.append((
+                    "item_pattern",
+                    f"Worker {worker_id} manages {item_name} inventory in {storage_area}.",
+                ))
 
     if statements:
-        combined = " ".join(statements)
-        logger.info("  MEM0 WRITE  worker=%s  statements=%d  content=%r", worker_id, len(statements), combined[:200])
         db_ref = state.get("db")
-        await add_user_memory(combined, worker_id, db=db_ref)
-        logger.info("NODE ◀── persist_memory  mem0_written=True  statements=%d", len(statements))
+        written = 0
+        for memory_type, text in statements:
+            result = await add_user_memory(text, worker_id, metadata={"memory_type": memory_type}, db=db_ref)
+            ok = result.get("written", bool(result))  # local path sets "written"; Mem0-cloud path: any non-empty result
+            written += bool(ok)
+            logger.info("  MEM0 WRITE  worker=%s  type=%s  written=%s  content=%r", worker_id, memory_type, bool(ok), text[:160])
+        logger.info("NODE ◀── persist_memory  mem0_written=%d/%d", written, len(statements))
     else:
         logger.info("NODE ◀── persist_memory  mem0_written=False  (no statements)")
 
@@ -1504,13 +1531,19 @@ async def persist_memory_node(state: WorkflowState) -> dict:
     except Exception as exc:
         logger.warning("persist_memory  embedding backfill failed: %s", exc)
 
-    # Episodic compression — fire-and-forget after conversation is saved
+    # Episodic compression — fire-and-forget after conversation is saved.
+    # Only worth the extra LLM call when this session is actually reading
+    # history back from the DB (load_compressed_history). Callers that
+    # supply their own conversation_history — e.g. the frontend, which
+    # keeps the full transcript client-side — never read the digest we'd
+    # write here, so compressing for them is a wasted call every N turns.
     try:
-        from services.memory_service import maybe_compress_session
-        db = state.get("db")
-        session_id = state.get("session_id", "")
-        if db and session_id:
-            await maybe_compress_session(session_id, db)
+        if state.get("used_db_history"):
+            from services.memory_service import maybe_compress_session
+            db = state.get("db")
+            session_id = state.get("session_id", "")
+            if db and session_id:
+                await maybe_compress_session(session_id, db)
     except Exception as exc:
         logger.warning("persist_memory  episodic compression failed: %s", exc)
 

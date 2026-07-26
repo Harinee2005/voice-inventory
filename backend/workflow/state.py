@@ -31,6 +31,9 @@ class WorkflowState(TypedDict, total=False):
     pending_action: Optional[Dict]  # DB-persisted pending confirmation state
     rejection_context: str          # items guard rejected this session
     session_digest: str             # compressed episodic summary of older turns
+    used_db_history: bool           # True when history came from load_compressed_history
+                                     # (client-provided history means any digest we write
+                                     # would never be read back — see persist_memory_node)
 
     # load_memory_node writes these
     user_memories: List[Dict]       # raw Mem0 records

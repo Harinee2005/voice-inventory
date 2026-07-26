@@ -1128,6 +1128,8 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
         }
 
     if node_name == "load_memory":
+        from clients.mem0_client import USE_LOCAL_VECTOR
+        source_label = "Local (pgvector)" if USE_LOCAL_VECTOR else "Mem0 Cloud"
         mems = output.get("user_memories") or []
         detail = f"{len(mems)} worker memories" if mems else "no memories yet"
         memory_texts = [
@@ -1137,10 +1139,10 @@ def _node_status(node_name: str, output: dict, state: Optional[dict] = None) -> 
         ]
         return {
             "icon": icon, "label": label, "detail": detail,
-            "input": {"worker": s.get("worker_id", "?"), "source": "Mem0"},
+            "input": {"worker": s.get("worker_id", "?"), "source": source_label},
             "output": {
                 "memories_loaded": len(mems),
-                "profile_source": "Mem0" if mems else "DB (fallback)",
+                "profile_source": source_label if mems else "DB (fallback)",
                 "memories": memory_texts or None,
             },
         }

@@ -37,8 +37,17 @@ def _tokenize(text: str) -> List[str]:
     return [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
 
 
-def _extract_target_items(intent_result: dict, extraction_result: dict) -> List[str]:
-    """Collect item names from intent slots + extraction agent output."""
+def _extract_target_items(
+    intent_result: dict, extraction_result: dict, pending_action: Optional[dict] = None
+) -> List[str]:
+    """Collect item names from intent slots + extraction agent output.
+
+    Falls back to the pending action's items when neither source names one —
+    this is the common shape of a bare confirm turn ("yes", "for both", "1 kg
+    each"): the worker isn't repeating the item, they're responding to a
+    confirm prompt that already named it. Without this fallback those turns
+    fall through to the "broad" (unfiltered) path in prioritize_context.
+    """
     items: List[str] = []
     slot = (intent_result or {}).get("slot_item")
     if slot:
@@ -47,6 +56,11 @@ def _extract_target_items(intent_result: dict, extraction_result: dict) -> List[
         name = ei.get("canonical_name") or ei.get("raw_text")
         if name and name not in items:
             items.append(name)
+    if not items and pending_action:
+        for pi in (pending_action.get("items") or []):
+            name = pi.get("item_name")
+            if name and name not in items:
+                items.append(name)
     return items
 
 
@@ -270,6 +284,7 @@ def prioritize_context(
     user_profile_context: str,
     db: Any = None,
     session_id: str = "",
+    pending_action: Optional[dict] = None,
 ) -> dict:
     """
     Main entry point — returns filtered versions of every context section.
@@ -277,7 +292,7 @@ def prioritize_context(
     Prunes conversation history via pgvector ANN (when db/session_id provided) or BM25.
     Skips item filtering for query/analytics intents (full inventory needed).
     """
-    target_items = _extract_target_items(intent_result, extraction_result)
+    target_items = _extract_target_items(intent_result, extraction_result, pending_action)
     message_words = set(_tokenize(text))
 
     # 1. Conversation history — pgvector ANN preferred, BM25 fallback
